@@ -1,0 +1,100 @@
+name: CI
+
+# Tests on every push and pull request; on main and on version tags, also
+# builds the linux/amd64 + linux/arm64 image and pushes it to a registry.
+#
+# Repository settings (Settings > Actions), nothing is hard-coded here:
+# - variable PUBLISH = "true" on the instance that publishes the image
+#   (leave it unset on mirrors)
+# - variable REGISTRY, e.g. registry.example.com
+# - variable IMAGE, e.g. registry.example.com/owner/idunn
+# - variable REGISTRY_USER
+# - secret REGISTRY_TOKEN, with permission to push packages
+# The image job needs a runner whose job containers get the Docker socket.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: golang:1.27-alpine
+    steps:
+      - name: Checkout
+        run: |
+          apk add --no-cache -q git
+          git config --global --add safe.directory '*'
+          git init -q .
+          git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
+          git -c http.extraHeader="Authorization: token ${{ secrets.GITHUB_TOKEN }}" fetch -q --depth 1 origin "${{ github.sha }}"
+          git checkout -q FETCH_HEAD
+
+      - name: Format
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests
+        run: go test ./...
+
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  image:
+    needs: test
+    if: ${{ vars.PUBLISH == 'true' && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    container:
+      image: docker:cli
+      options: -v /var/run/docker.sock:/var/run/docker.sock
+    defaults:
+      run:
+        shell: sh
+    env:
+      IMAGE: ${{ vars.IMAGE }}
+    steps:
+      - name: Checkout
+        run: |
+          apk add --no-cache -q git
+          git config --global --add safe.directory '*'
+          git init -q .
+          git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
+          git -c http.extraHeader="Authorization: token ${{ secrets.GITHUB_TOKEN }}" fetch -q --depth 1 origin "${{ github.sha }}"
+          git checkout -q FETCH_HEAD
+
+      - name: Tags
+        run: |
+          short=$(echo "${{ github.sha }}" | cut -c1-12)
+          case "${{ github.ref }}" in
+            refs/tags/v*) version="${{ github.ref_name }}"; tags="-t $IMAGE:$version -t $IMAGE:latest" ;;
+            *) version="main-$short"; tags="-t $IMAGE:main -t $IMAGE:$short" ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAGS=$tags" >> "$GITHUB_ENV"
+
+      - name: Build and push
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          echo "$REGISTRY_TOKEN" | docker login "${{ vars.REGISTRY }}" -u "${{ vars.REGISTRY_USER }}" --password-stdin
+          docker buildx create --name idunn-builder --driver docker-container --use >/dev/null
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
+            --label org.opencontainers.image.source="${{ github.server_url }}/${{ github.repository }}" \
+            --label org.opencontainers.image.revision="${{ github.sha }}" \
+            --label org.opencontainers.image.version="$VERSION" \
+            --metadata-file /tmp/metadata.json \
+            $TAGS --push .
+          echo "Pushed $VERSION:"
+          grep -o '"containerimage.digest": *"[^"]*"' /tmp/metadata.json
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker buildx rm idunn-builder >/dev/null 2>&1 || true
+          docker logout "${{ vars.REGISTRY }}" || true

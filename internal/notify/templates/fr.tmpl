@@ -1,0 +1,23 @@
+{{- range .Events }}
+{{- if eq .Kind "startup" }}
+🍏 Iðunn {{ .Version }} démarré sur {{ .Node }} : {{ .Tracked }} services suivis, planification {{ .Schedule }}{{ if .Blackout }}, exclusion {{ .Blackout }}{{ end }}{{ if .Mode }} ({{ .Mode }}){{ end }}
+{{- else if eq .Kind "updated" }}
+✅ **{{ .Service }}** mis à jour : `{{ .Image }}` {{ short .OldDigest }} → {{ short .NewDigest }} en {{ dur .Duration }}
+{{- else if eq .Kind "pending" }}
+⏳ **{{ .Service }}** : nouvelle image `{{ .Image }}` {{ short .NewDigest }}, appliquée après {{ clock .ApplyAt }}
+{{- else if eq .Kind "detected" }}
+🔎 **{{ .Service }}** : nouvelle image `{{ .Image }}` {{ short .NewDigest }} (surveillance seule)
+{{- else if eq .Kind "rollback" }}
+↩️ **{{ .Service }}** revenu à l'image précédente ({{ .State }}){{ if .Message }} : {{ .Message }}{{ end }}
+{{- else if eq .Kind "rollback_failed" }}
+🛑 **{{ .Service }}** rollback en échec ({{ .State }}){{ if .Message }} : {{ .Message }}{{ end }}. Action manuelle nécessaire.
+{{- else if eq .Kind "paused" }}
+🛑 **{{ .Service }}** mise à jour en pause{{ if .Message }} : {{ .Message }}{{ end }}. Action manuelle nécessaire.
+{{- else if eq .Kind "guard" }}
+⚠️ Passage reporté, nœud indisponible : {{ join .Nodes ", " }}
+{{- else if eq .Kind "head_failed" }}
+⚠️ **{{ .Service }}** : impossible de vérifier `{{ .Image }}` sur {{ .Registry }}{{ if .StatusCode }} (HTTP {{ .StatusCode }}){{ end }}
+{{- else if eq .Kind "cleanup_failed" }}
+⚠️ Nettoyage des images en échec sur {{ join .Nodes ", " }}{{ if .Message }} : {{ .Message }}{{ end }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,250 @@
+// Command idunn keeps Docker Swarm services on the latest digest of their
+// image tag.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+	_ "time/tzdata" // the image has no zoneinfo; TZ must still work
+
+	"github.com/moby/moby/client"
+	"github.com/robfig/cron/v3"
+
+	"github.com/xaoimoon/idunn/internal/cleanup"
+	"github.com/xaoimoon/idunn/internal/cluster"
+	"github.com/xaoimoon/idunn/internal/config"
+	"github.com/xaoimoon/idunn/internal/notify"
+	"github.com/xaoimoon/idunn/internal/registry"
+	"github.com/xaoimoon/idunn/internal/schedule"
+	"github.com/xaoimoon/idunn/internal/updater"
+)
+
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
+
+func main() {
+	cmd := ""
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
+	}
+	var err error
+	switch cmd {
+	case "", "run":
+		err = run()
+	case "health":
+		err = health()
+	case "cleanup":
+		err = runCleanup(os.Args[2:])
+	case "version", "--version", "-v":
+		fmt.Println(version)
+	case "help", "--help", "-h":
+		fmt.Println("usage: idunn [run|health|cleanup|version]\nConfiguration is read from IDUNN_* environment variables.")
+	default:
+		err = fmt.Errorf("unknown command %q", cmd)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "idunn:", err)
+		os.Exit(1)
+	}
+}
+
+func newLogger(level, format string) *slog.Logger {
+	var l slog.Level
+	_ = l.UnmarshalText([]byte(level))
+	opts := &slog.HandlerOptions{Level: l}
+	if format == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+}
+
+func dockerClient() (*client.Client, error) {
+	return client.New(client.FromEnv, client.WithUserAgent("idunn/"+version))
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log := newLogger(cfg.LogLevel, cfg.LogFormat)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	docker, err := dockerClient()
+	if err != nil {
+		return err
+	}
+	defer docker.Close()
+
+	nodeID, err := cluster.LocalNodeID(ctx, docker)
+	if err != nil {
+		return err
+	}
+	self, err := cluster.FindSelf(ctx, docker)
+	if err != nil {
+		log.Warn("cannot identify own service; self-exclusion relies on labels and image cleanup is disabled", "error", err)
+	}
+
+	creds, err := registry.LoadCredentials(cfg.RegistryAuthFile)
+	if err != nil {
+		return err
+	}
+	checker, err := registry.NewChecker(creds, "idunn/"+version, false)
+	if err != nil {
+		return err
+	}
+	notifier, err := notify.New(notify.Options{
+		URLs:     cfg.NotificationURLs,
+		Lang:     cfg.NotificationLang,
+		Template: cfg.NotificationTemplate,
+		Level:    notify.ParseLevel(cfg.NotificationLevel),
+		Report:   cfg.NotificationReport,
+	}, log)
+	if err != nil {
+		return err
+	}
+
+	u := &updater.Updater{
+		Docker:   docker,
+		Checker:  checker,
+		Auth:     creds,
+		Notifier: notifier,
+		Config:   cfg,
+		Log:      log,
+		NodeID:   nodeID,
+		Self:     self,
+	}
+	job := &cleanup.Job{Docker: docker, Self: self, Auth: creds, Keep: cfg.CleanupKeep, Ignore: cfg.LabelIgnore, Log: log}
+	u.Cleaner = job.Run
+
+	scheduleDesc := cfg.Schedule
+	if cfg.Interval > 0 {
+		scheduleDesc = "every " + cfg.Interval.String()
+	}
+	startup(ctx, u, log, nodeID, scheduleDesc)
+
+	if cfg.RunOnce {
+		u.Pass(ctx)
+		return nil
+	}
+
+	if cfg.Interval > 0 {
+		t := time.NewTicker(cfg.Interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				log.Info("stopping")
+				return nil
+			case <-t.C:
+				u.Pass(ctx)
+			}
+		}
+	}
+
+	c := cron.New(cron.WithSeconds(), cron.WithLocation(time.Local))
+	if _, err := c.AddFunc(cfg.Schedule, func() { u.Pass(ctx) }); err != nil {
+		return fmt.Errorf("IDUNN_SCHEDULE: %w", err)
+	}
+	c.Start()
+	<-ctx.Done()
+	log.Info("stopping, waiting for the current pass")
+	<-c.Stop().Done()
+	return nil
+}
+
+// startup logs the configuration and the tracked services on every
+// instance; only the leader sends the startup notification.
+func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, scheduleDesc string) {
+	cfg := u.Config
+	host, _ := os.Hostname()
+	nodeName := nodeID
+	if nodes, err := cluster.Nodes(ctx, u.Docker); err == nil {
+		for _, n := range nodes {
+			if n.ID == nodeID {
+				nodeName = n.Name
+			}
+		}
+	}
+	var mode []string
+	if cfg.MonitorOnly {
+		mode = append(mode, "monitor-only")
+	}
+	if cfg.DryRun {
+		mode = append(mode, "dry-run")
+	}
+	blackout := make([]string, len(cfg.Blackout))
+	for i, w := range cfg.Blackout {
+		blackout[i] = w.String()
+	}
+
+	services, err := u.Tracked(ctx)
+	if err != nil {
+		log.Error("cannot list services", "error", err)
+	}
+	names := make([]string, len(services))
+	for i, s := range services {
+		names[i] = s.Spec.Name
+	}
+	log.Info("idunn started",
+		"version", version, "node", nodeName, "container", host,
+		"schedule", scheduleDesc, "timezone", time.Local.String(),
+		"blackout", strings.Join(blackout, ","), "filter", cfg.LabelFilter.String(),
+		"ignore", cfg.LabelIgnore.String(), "min_age", cfg.MinAge.String(),
+		"mode", strings.Join(mode, ","), "tracked", len(services))
+	log.Info("tracked services", "services", strings.Join(names, " "))
+
+	if leader, err := cluster.IsLeader(ctx, u.Docker, nodeID); err == nil && leader {
+		u.Notifier.Send(ctx, []notify.Event{{
+			Kind: notify.KindStartup, Level: notify.Info, Time: time.Now(),
+			Version: version, Node: nodeName, Schedule: scheduleDesc,
+			Blackout: strings.Join(blackout, ","), Tracked: len(services), Mode: strings.Join(mode, ", "),
+		}})
+	}
+	if _, in := schedule.InBlackout(cfg.Blackout, time.Now()); in {
+		log.Info("currently inside a blackout window")
+	}
+}
+
+// health checks that the Docker API answers; the healthcheck runs inside the
+// container, so the process itself is alive by definition.
+func health() error {
+	docker, err := dockerClient()
+	if err != nil {
+		return err
+	}
+	defer docker.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = docker.Ping(ctx, client.PingOptions{})
+	return err
+}
+
+func runCleanup(args []string) error {
+	fs := flag.NewFlagSet("cleanup", flag.ContinueOnError)
+	keep := fs.Int("keep", 1, "unused images kept per repository")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		return fmt.Errorf("cleanup: no repository given")
+	}
+	log := newLogger(os.Getenv("IDUNN_LOG_LEVEL"), os.Getenv("IDUNN_LOG_FORMAT"))
+	docker, err := dockerClient()
+	if err != nil {
+		return err
+	}
+	defer docker.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return cleanup.Local(ctx, docker, fs.Args(), *keep, log)
+}

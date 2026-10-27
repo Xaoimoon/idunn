@@ -1,0 +1,47 @@
+# Example stack: docker stack deploy -c stack.yml idunn
+#
+# Replace 999 with the group that owns /var/run/docker.sock on your managers
+# (stat -c %g /var/run/docker.sock). It must be the same on every manager.
+services:
+  idunn:
+    image: idunn:latest # use your registry path, ideally pinned as tag@digest
+    user: "65532:999"
+    read_only: true
+    environment:
+      TZ: UTC
+      # IDUNN_SCHEDULE: "0 0 * * * *"   # every hour (default)
+      # IDUNN_BLACKOUT: "01:00-05:00"   # no update during the night
+      # IDUNN_MIN_AGE: "6h"             # wait before applying a new image
+      # IDUNN_MONITOR_ONLY: "true"      # detect and notify only
+      IDUNN_NOTIFICATION_URL_FILE: /run/secrets/idunn_notification_url
+    secrets:
+      - idunn_notification_url
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      # One instance per manager; only the Raft leader acts.
+      mode: global
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        idunn.enable: "false" # Iðunn is upgraded by redeploying this stack
+      restart_policy:
+        condition: any
+      update_config:
+        order: stop-first
+      resources:
+        limits:
+          memory: 64M
+
+  # Any service opts in with a deploy label.
+  whoami:
+    image: traefik/whoami:latest
+    deploy:
+      labels:
+        idunn.enable: "true"
+
+secrets:
+  idunn_notification_url:
+    # printf 'discord://token@webhookid' | docker secret create idunn_notification_url -
+    external: true
