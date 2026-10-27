@@ -88,6 +88,10 @@ jobs:
         env:
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
+          for v in REGISTRY="${{ vars.REGISTRY }}" IMAGE="$IMAGE" REGISTRY_USER="${{ vars.REGISTRY_USER }}"; do
+            [ -n "${v#*=}" ] || { echo "::error::Repository variable ${v%%=*} is missing or empty."; exit 1; }
+          done
+          [ -n "$REGISTRY_TOKEN" ] || { echo "::error::Repository secret REGISTRY_TOKEN is missing or empty."; exit 1; }
           echo "$REGISTRY_TOKEN" | docker login "${{ vars.REGISTRY }}" -u "${{ vars.REGISTRY_USER }}" --password-stdin
           docker buildx create --name idunn-builder --driver docker-container --use >/dev/null
           docker buildx build --platform linux/amd64,linux/arm64 \
