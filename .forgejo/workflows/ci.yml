@@ -19,6 +19,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The job images (Alpine based) have no bash, the runner's default shell.
+defaults:
+  run:
+    shell: sh
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -30,8 +35,9 @@ jobs:
           apk add --no-cache -q git
           git config --global --add safe.directory '*'
           git init -q .
-          host=$(echo "${{ github.server_url }}" | sed 's#^https://##')
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${host}/${{ github.repository }}.git"
+          # server_url may be an internal http:// address: keep its scheme
+          url=$(echo "${{ github.server_url }}" | sed "s#://#://x-access-token:${{ secrets.GITHUB_TOKEN }}@#")
+          git remote add origin "${url}/${{ github.repository }}.git"
           git fetch -q --depth 1 origin "${{ github.sha }}"
           git checkout -q FETCH_HEAD
 
@@ -54,9 +60,6 @@ jobs:
     container:
       image: docker:cli
       options: -v /var/run/docker.sock:/var/run/docker.sock
-    defaults:
-      run:
-        shell: sh
     env:
       IMAGE: ${{ vars.IMAGE }}
     steps:
@@ -65,8 +68,9 @@ jobs:
           apk add --no-cache -q git
           git config --global --add safe.directory '*'
           git init -q .
-          host=$(echo "${{ github.server_url }}" | sed 's#^https://##')
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${host}/${{ github.repository }}.git"
+          # server_url may be an internal http:// address: keep its scheme
+          url=$(echo "${{ github.server_url }}" | sed "s#://#://x-access-token:${{ secrets.GITHUB_TOKEN }}@#")
+          git remote add origin "${url}/${{ github.repository }}.git"
           git fetch -q --depth 1 origin "${{ github.sha }}"
           git checkout -q FETCH_HEAD
 
