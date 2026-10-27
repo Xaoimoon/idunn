@@ -1,11 +1,10 @@
 # Example stack: docker stack deploy -c stack.yml idunn
 #
-# Replace 999 with the group that owns /var/run/docker.sock on your managers
-# (stat -c %g /var/run/docker.sock). It must be the same on every manager.
+# Iðunn switches by itself to an unprivileged user with the Docker socket's
+# group: no user or group to set here.
 services:
   idunn:
     image: idunn:latest # use your registry path, ideally pinned as tag@digest
-    user: "65532:999"
     read_only: true
     environment:
       TZ: UTC

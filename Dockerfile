@@ -13,10 +13,10 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o /out/idunn ./cmd/idunn
 
-FROM gcr.io/distroless/static-debian13:nonroot
+FROM gcr.io/distroless/static-debian13
 COPY --from=build /out/idunn /idunn
-# Non-root by default. Give the container the group that owns the Docker
-# socket on the host (see README).
-USER 65532:65532
+# Starts as root only to read the Docker socket's group, then switches at
+# once to uid 65532 with that group (see README, Security). Setting an
+# explicit non-root user skips the switch.
 HEALTHCHECK --interval=1m --timeout=10s --start-period=30s --retries=3 CMD ["/idunn", "health"]
 ENTRYPOINT ["/idunn"]

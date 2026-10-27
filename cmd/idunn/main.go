@@ -21,6 +21,7 @@ import (
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/config"
 	"github.com/xaoimoon/idunn/internal/notify"
+	"github.com/xaoimoon/idunn/internal/privdrop"
 	"github.com/xaoimoon/idunn/internal/registry"
 	"github.com/xaoimoon/idunn/internal/schedule"
 	"github.com/xaoimoon/idunn/internal/updater"
@@ -35,6 +36,16 @@ func main() {
 		cmd = os.Args[1]
 	}
 	var err error
+	switch cmd {
+	case "", "run", "health", "cleanup":
+		// Before anything else, including reading secrets.
+		if who, dropErr := privdrop.Drop(socketPath(), unprivilegedUID); dropErr != nil {
+			fmt.Fprintln(os.Stderr, "idunn: cannot drop root privileges:", dropErr)
+			os.Exit(1)
+		} else if who != "" && cmd != "health" {
+			fmt.Fprintln(os.Stderr, "idunn: dropped root privileges,", who)
+		}
+	}
 	switch cmd {
 	case "", "run":
 		err = run()
@@ -63,6 +74,22 @@ func newLogger(level, format string) *slog.Logger {
 		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+}
+
+// unprivilegedUID is the user Iðunn switches to when started as root
+// (the "nonroot" user of distroless images).
+const unprivilegedUID = 65532
+
+// socketPath returns the Docker socket Iðunn talks to, or "" for a TCP host.
+func socketPath() string {
+	host := os.Getenv("DOCKER_HOST")
+	if host == "" {
+		return "/var/run/docker.sock"
+	}
+	if p, ok := strings.CutPrefix(host, "unix://"); ok {
+		return p
+	}
+	return ""
 }
 
 func dockerClient() (*client.Client, error) {

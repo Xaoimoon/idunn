@@ -6,7 +6,8 @@ name: CI
 # Repository settings (Settings > Actions), nothing is hard-coded here:
 # - variable PUBLISH = "true" on the instance that publishes the image
 #   (leave it unset on mirrors)
-# - variable REGISTRY, e.g. registry.example.com
+# - variable REGISTRY, e.g. registry.example.com (it may be another forge
+#   than the one running this workflow)
 # - variable IMAGE, e.g. registry.example.com/owner/idunn
 # - variable REGISTRY_USER
 # - secret REGISTRY_TOKEN, with permission to push packages
@@ -29,8 +30,9 @@ jobs:
           apk add --no-cache -q git
           git config --global --add safe.directory '*'
           git init -q .
-          git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
-          git -c http.extraHeader="Authorization: token ${{ secrets.GITHUB_TOKEN }}" fetch -q --depth 1 origin "${{ github.sha }}"
+          host=$(echo "${{ github.server_url }}" | sed 's#^https://##')
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${host}/${{ github.repository }}.git"
+          git fetch -q --depth 1 origin "${{ github.sha }}"
           git checkout -q FETCH_HEAD
 
       - name: Format
@@ -63,8 +65,9 @@ jobs:
           apk add --no-cache -q git
           git config --global --add safe.directory '*'
           git init -q .
-          git remote add origin "${{ github.server_url }}/${{ github.repository }}.git"
-          git -c http.extraHeader="Authorization: token ${{ secrets.GITHUB_TOKEN }}" fetch -q --depth 1 origin "${{ github.sha }}"
+          host=$(echo "${{ github.server_url }}" | sed 's#^https://##')
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@${host}/${{ github.repository }}.git"
+          git fetch -q --depth 1 origin "${{ github.sha }}"
           git checkout -q FETCH_HEAD
 
       - name: Tags

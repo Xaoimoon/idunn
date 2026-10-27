@@ -19,7 +19,7 @@ In Norse mythology, Iðunn keeps the apples that keep the gods young.
 - One report per pass, only when something happened; built-in English and French templates, or your own Go template.
 - Monitor-only (global or per service), dry-run, run-once.
 - Highly available: deployed globally on the managers, only the Raft leader acts, and leadership is checked again before each service.
-- Small and locked down: static binary on a distroless image (~28 MB), non-root, read-only file system, no listening port, stateless.
+- Small and locked down: static binary on a distroless image (~28 MB), unprivileged user with the socket group only, read-only file system, no listening port, stateless.
 
 ## How a pass works
 
@@ -36,10 +36,9 @@ Iðunn only changes the digest of running services. When you redeploy a stack, S
 
 ## Quick start
 
-1. Find the group owning the Docker socket on your managers: `stat -c %g /var/run/docker.sock`. It must be the same on every manager.
-2. Optionally store notification URLs as a secret: `printf 'discord://token@webhookid' | docker secret create idunn_notification_url -`
-3. Adapt [examples/stack.yml](examples/stack.yml) (image, socket group) and deploy it: `docker stack deploy -c stack.yml idunn`.
-4. Add `idunn.enable: "true"` to the `deploy.labels` of the services to keep up to date.
+1. Optionally store notification URLs as a secret: `printf 'discord://token@webhookid' | docker secret create idunn_notification_url -`
+2. Adapt [examples/stack.yml](examples/stack.yml) (image path) and deploy it: `docker stack deploy -c stack.yml idunn`.
+3. Add `idunn.enable: "true"` to the `deploy.labels` of the services to keep up to date.
 
 Start with `IDUNN_MONITOR_ONLY=true` for a few days to see what would be updated.
 
@@ -122,7 +121,11 @@ Iðunn needs the Docker socket of a manager, which grants full control of the cl
 - No container creation, no exec, no listening port.
 - Secrets are only read from files or environment variables, and are masked in logs, notifications and errors.
 
-The image runs as user `65532`; give it the group owning the socket (`user: "65532:<gid>"`). Use `read_only: true`.
+### User and socket group
+
+The image starts as root only long enough to read the group owning the Docker socket, then switches for good to user `65532` with that group as its only supplementary group, and no capabilities. It exits if the switch fails. This works even when the socket group ID differs between managers, which a fixed `user:` cannot handle (and `group_add` is not supported by `docker stack deploy`). The cleanup job does the same.
+
+If every manager shares the same socket group, you may instead set `user: "65532:<gid>"`; Iðunn then runs as given and skips the switch. Either way, use `read_only: true`.
 
 ## Healthcheck
 
