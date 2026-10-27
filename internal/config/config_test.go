@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/xaoimoon/idunn/internal/versions"
 )
 
 func loadFrom(t *testing.T, vars map[string]string, files map[string]string) (*Config, error) {
@@ -44,6 +46,9 @@ func TestDefaults(t *testing.T) {
 	}
 	if len(c.Blackout) != 0 || len(c.NotificationURLs) != 0 {
 		t.Error("blackout and notification URLs must be empty by default")
+	}
+	if c.VersionCheck || c.VersionSchedule != DefaultVersionSchedule || c.VersionLevel != versions.Patch {
+		t.Errorf("unexpected version check defaults: %v %q %s", c.VersionCheck, c.VersionSchedule, c.VersionLevel)
 	}
 }
 
@@ -91,6 +96,8 @@ func TestErrors(t *testing.T) {
 		"zero concurrency":      {"IDUNN_MAX_CONCURRENT": "0"},
 		"value and file":        {"IDUNN_NOTIFICATION_URL": "x", "IDUNN_NOTIFICATION_URL_FILE": "/f"},
 		"bad head warn":         {"IDUNN_HEAD_FAILURE_WARN": "sometimes"},
+		"bad version level":     {"IDUNN_VERSION_LEVEL": "huge"},
+		"version level none":    {"IDUNN_VERSION_LEVEL": "none"},
 	}
 	for name, vars := range cases {
 		t.Run(name, func(t *testing.T) {

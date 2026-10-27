@@ -12,6 +12,7 @@ services:
       # IDUNN_BLACKOUT: "01:00-05:00"   # no update during the night
       # IDUNN_MIN_AGE: "6h"             # wait before applying a new image
       # IDUNN_MONITOR_ONLY: "true"      # detect and notify only
+      # IDUNN_VERSION_CHECK: "true"     # daily report of newer version tags
       IDUNN_NOTIFICATION_URL_FILE: /run/secrets/idunn_notification_url
     secrets:
       - idunn_notification_url

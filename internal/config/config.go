@@ -10,10 +10,14 @@ import (
 	"time"
 
 	"github.com/xaoimoon/idunn/internal/schedule"
+	"github.com/xaoimoon/idunn/internal/versions"
 )
 
 // DefaultSchedule runs a pass at the top of every hour.
 const DefaultSchedule = "0 0 * * * *"
+
+// DefaultVersionSchedule runs the version check every day at 09:00.
+const DefaultVersionSchedule = "0 0 9 * * *"
 
 // HeadFailureWarn controls when a failed manifest HEAD is reported.
 type HeadFailureWarn string
@@ -54,6 +58,10 @@ type Config struct {
 	Cleanup     bool
 	CleanupKeep int
 
+	VersionCheck    bool
+	VersionSchedule string
+	VersionLevel    versions.Level
+
 	RegistryAuthFile string
 	HeadFailureWarn  HeadFailureWarn
 
@@ -88,6 +96,8 @@ func load(lookup lookupFunc, read readFunc) (*Config, error) {
 		MaxConcurrent:      e.int("IDUNN_MAX_CONCURRENT", 1),
 		Cleanup:            e.bool("IDUNN_CLEANUP", true),
 		CleanupKeep:        e.int("IDUNN_CLEANUP_KEEP", 1),
+		VersionCheck:       e.bool("IDUNN_VERSION_CHECK", false),
+		VersionSchedule:    e.string("IDUNN_VERSION_SCHEDULE", DefaultVersionSchedule),
 		RegistryAuthFile:   e.string("IDUNN_REGISTRY_AUTH_FILE", ""),
 		HeadFailureWarn:    HeadFailureWarn(strings.ToLower(e.string("IDUNN_HEAD_FAILURE_WARN", string(HeadWarnAuto)))),
 		NotificationLang:   strings.ToLower(e.string("IDUNN_NOTIFICATION_LANG", "en")),
@@ -118,6 +128,13 @@ func load(lookup lookupFunc, read readFunc) (*Config, error) {
 			e.fail("IDUNN_BLACKOUT: %v", err)
 		}
 		c.Blackout = w
+	}
+
+	lvl := e.string("IDUNN_VERSION_LEVEL", "patch")
+	if l, ok := versions.ParseLevel(lvl); ok && l != versions.None {
+		c.VersionLevel = l
+	} else {
+		e.fail("IDUNN_VERSION_LEVEL: %q must be one of patch, minor, major", lvl)
 	}
 
 	c.LabelFilter = e.label("IDUNN_LABEL_FILTER", "idunn.enable=true")

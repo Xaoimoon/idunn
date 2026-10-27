@@ -77,6 +77,25 @@ func (c *Checker) Digest(ctx context.Context, image string) (string, error) {
 	return desc.Digest.String(), nil
 }
 
+// Tags lists every tag of an image's repository, following pagination.
+// Failures are returned as *HeadError, with the HTTP code when there is one.
+func (c *Checker) Tags(ctx context.Context, image string) ([]string, error) {
+	ref, err := name.ParseReference(image, c.opts...)
+	if err != nil {
+		return nil, fmt.Errorf("invalid image reference %q: %w", image, err)
+	}
+	tags, err := c.puller.List(ctx, ref.Context())
+	if err != nil {
+		he := &HeadError{Registry: ref.Context().RegistryStr(), Err: err}
+		var te *transport.Error
+		if errors.As(err, &te) {
+			he.StatusCode = te.StatusCode
+		}
+		return nil, he
+	}
+	return tags, nil
+}
+
 // RegistryOf returns the registry host of an image reference.
 func RegistryOf(image string) string {
 	ref, err := name.ParseReference(image)

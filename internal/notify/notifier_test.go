@@ -56,7 +56,7 @@ func TestRenderBuiltins(t *testing.T) {
 
 func TestEveryKindRenders(t *testing.T) {
 	kinds := []Kind{KindStartup, KindUpdated, KindPending, KindDetected, KindRollback,
-		KindRollbackFailed, KindPaused, KindGuard, KindHeadFailed, KindCleanupFailed}
+		KindRollbackFailed, KindPaused, KindGuard, KindHeadFailed, KindCleanupFailed, KindNewVersion}
 	for _, lang := range []string{"en", "fr"} {
 		tmpl, _ := Parse(lang, "")
 		n := NewWithSender(nil, tmpl, Info, true, quiet)

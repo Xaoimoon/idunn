@@ -20,6 +20,7 @@ In Norse mythology, Iðunn keeps the apples that keep the gods young.
 - Cleanup of the old images of updated repositories on every node, through a short-lived global job.
 - One report per pass, only when something happened; built-in English and French templates, or your own Go template.
 - Monitor-only (global or per service), dry-run, run-once.
+- Daily report of newer version tags for services pinned to a version (`mariadb:12.3.3`, `forgejo:16`), which Iðunn never updates by itself.
 - Highly available: deployed globally on the managers, only the Raft leader acts, and leadership is checked again before each service.
 - Small and locked down: static binary on a distroless image (~28 MB), unprivileged user with the socket group only, read-only file system, no listening port, stateless.
 
@@ -66,6 +67,9 @@ All settings are environment variables. Variables marked *secret* also accept a 
 | `IDUNN_MAX_CONCURRENT` | `1` | Services updated in parallel. |
 | `IDUNN_CLEANUP` | `true` | Remove old images after updates. |
 | `IDUNN_CLEANUP_KEEP` | `1` | Unused images kept per repository and per node, besides the one in use. |
+| `IDUNN_VERSION_CHECK` | `false` | Enable the [version check](#new-versions-of-pinned-images). |
+| `IDUNN_VERSION_SCHEDULE` | `0 0 9 * * *` | Cron expression with seconds for the version check (daily at 09:00 by default). |
+| `IDUNN_VERSION_LEVEL` | `patch` | Smallest bump reported by the version check: `patch`, `minor` or `major`. |
 | `IDUNN_REGISTRY_AUTH_FILE` | | Docker `config.json` with registry credentials (use a secret). |
 | `IDUNN_HEAD_FAILURE_WARN` | `auto` | Notify failed `HEAD` checks: `never`, `always`, or `auto` (only for registries known to support `HEAD`; others are logged). |
 | `IDUNN_NOTIFICATION_URL` | | *Secret.* One or more Shoutrrr URLs, separated by spaces. |
@@ -87,6 +91,7 @@ Set them in `deploy.labels`; they override the global settings for that service.
 | `idunn.min-age=<duration>` | Maturity delay for this service. |
 | `idunn.timeout=<duration>` | Update timeout for this service (e.g. `20m` for a heavy image). |
 | `idunn.rollback=false` | Disables the rollback for this service. |
+| `idunn.version-level=<level>` | Smallest bump reported by the version check for this service: `patch`, `minor`, `major`, or `none` to leave it out. |
 
 ## Notifications
 
@@ -102,14 +107,27 @@ A report is sent after a pass only if at least one event reaches `IDUNN_NOTIFICA
 | Pass postponed, node unavailable | warn | Once while the situation lasts. |
 | Image check failed | warn | Registry and HTTP code; once until the check succeeds again. |
 | Cleanup failed on a node | warn | |
+| Newer version available | info | Version check only: one report per check, listing every service with a newer tag. |
 | Update paused | error | Rollback disabled; manual action required. |
 | Rollback failed | error | Manual action required. |
 
-Custom templates receive `.Events`, a list of events with the fields `Kind` (`startup`, `updated`, `pending`, `detected`, `rollback`, `rollback_failed`, `paused`, `guard`, `head_failed`, `cleanup_failed`), `Level`, `Time`, `Service`, `Image`, `OldDigest`, `NewDigest`, `Duration`, `ApplyAt`, `State`, `Message`, `Registry`, `StatusCode`, `Nodes`, and for startup `Version`, `Node`, `Schedule`, `Blackout`, `Tracked`, `Mode`. Helpers: `short` (12-character digest), `dur`, `clock`, `join`. See [the built-in templates](internal/notify/templates).
+Custom templates receive `.Events`, a list of events with the fields `Kind` (`startup`, `updated`, `pending`, `detected`, `rollback`, `rollback_failed`, `paused`, `guard`, `head_failed`, `cleanup_failed`, `new_version`), `Level`, `Time`, `Service`, `Image`, `OldDigest`, `NewDigest`, `Duration`, `ApplyAt`, `State`, `Message`, `Registry`, `StatusCode`, `Nodes`, `Tag` and `Bump` (new version), and for startup `Version`, `Node`, `Schedule`, `Blackout`, `Tracked`, `Mode`. Helpers: `short` (12-character digest), `dur`, `clock`, `join`. See [the built-in templates](internal/notify/templates).
+
+## New versions of pinned images
+
+A service pinned to a version (`mariadb:12.3.3`, or a branch such as `forgejo:16` or `haproxy:2.9-alpine`) only receives the rebuilds published under that tag: nothing tells you when `12.3.4`, `13.0.0` or `forgejo:17` comes out. With `IDUNN_VERSION_CHECK=true`, the leader lists, once a day, the tags of each such image and reports the newest one. It never updates anything: you move to the new version by editing the stack file.
+
+- Every service is checked, whatever its opt-in or ignore label, Iðunn included: pinned versions are precisely the ones no automatic update covers. `idunn.version-level=none` leaves a service out.
+- Only tags of the same shape are compared: same `v` prefix, same number of components and same suffix. `2.9-alpine` is compared with `3.2-alpine`, never with `3.2` or `3.2-bookworm`, and pre-releases such as `13.0.0-rc1` are left out of a plain `12.3.3`.
+- A tag that is not a version (`latest`, `stable`, `alpine`) is skipped.
+- The newest tag whose bump reaches the level (`IDUNN_VERSION_LEVEL` or `idunn.version-level`) is reported, with the size of the bump. At `minor`, `12.3.3` → `12.3.4` is ignored but `12.4.0` and `13.0.0` are reported.
+- Each check sends one report listing everything available, and repeats it daily until you upgrade. Nothing is kept between restarts.
+- One tag listing per repository and per check. Listing tags is not an image pull and does not count against Docker Hub pull limits.
+- A listing is abandoned after 2 minutes and the failure is only logged: some registries, such as `docker.elastic.co`, page through an endless list of build tags. Set `idunn.version-level=none` on those services to silence the warning.
 
 ## Private registries
 
-Mount a Docker `config.json` as a secret and point `IDUNN_REGISTRY_AUTH_FILE` at it. Iðunn uses it for its `HEAD` requests and forwards the matching credentials with each service update, so that every node can pull the image. Only static credentials (`auth`, `username`/`password`, `identitytoken`) are supported, not credential helpers.
+Mount a Docker `config.json` as a secret and point `IDUNN_REGISTRY_AUTH_FILE` at it. Iðunn uses it for its `HEAD` requests and tag listings, and forwards the matching credentials with each service update, so that every node can pull the image. Only static credentials (`auth`, `username`/`password`, `identitytoken`) are supported, not credential helpers.
 
 Registry mirrors configured on the Docker daemons keep serving the pulls: Iðunn only talks to the registry for `HEAD` requests.
 

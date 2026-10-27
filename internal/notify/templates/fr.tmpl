@@ -19,5 +19,7 @@
 ⚠️ **{{ .Service }}** : impossible de vérifier `{{ .Image }}` sur {{ .Registry }}{{ if .StatusCode }} (HTTP {{ .StatusCode }}){{ end }}
 {{- else if eq .Kind "cleanup_failed" }}
 ⚠️ Nettoyage des images en échec sur {{ join .Nodes ", " }}{{ if .Message }} : {{ .Message }}{{ end }}
+{{- else if eq .Kind "new_version" }}
+🆕 **{{ .Service }}** : {{ .Tag }} disponible ({{ if eq .Bump "major" }}majeure{{ else if eq .Bump "minor" }}mineure{{ else }}correctif{{ end }}), en service `{{ .Image }}`
 {{- end }}
 {{- end }}

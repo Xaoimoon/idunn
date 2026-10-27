@@ -48,19 +48,10 @@ func newTarget(svc swarm.Service, cfg *config.Config) target {
 	}
 	labels := svc.Spec.Labels
 
-	var specImage string
-	if cs := svc.Spec.TaskTemplate.ContainerSpec; cs != nil {
-		specImage = cs.Image
-	}
-	if specImage == "" {
+	t.Image, t.Current = referenceImage(svc)
+	if t.Image == "" {
 		t.Skip = "not a container service"
 		return t
-	}
-	base, digest, _ := strings.Cut(specImage, "@")
-	t.Current = digest
-	t.Image = base
-	if stackImage := strings.TrimSpace(labels[labelStackImage]); stackImage != "" {
-		t.Image = stackImage
 	}
 	if strings.Contains(t.Image, "@") {
 		t.Skip = "image pinned by digest"
@@ -99,6 +90,21 @@ func newTarget(svc swarm.Service, cfg *config.Config) target {
 		}
 	}
 	return t
+}
+
+// referenceImage returns the image as written in the stack file (the
+// com.docker.stack.image label), else the spec image without its digest, and
+// the digest pinned in the spec. image is empty for a non-container service.
+func referenceImage(svc swarm.Service) (image, current string) {
+	cs := svc.Spec.TaskTemplate.ContainerSpec
+	if cs == nil || cs.Image == "" {
+		return "", ""
+	}
+	image, current, _ = strings.Cut(cs.Image, "@")
+	if stackImage := strings.TrimSpace(svc.Spec.Labels[labelStackImage]); stackImage != "" {
+		image = stackImage
+	}
+	return image, current
 }
 
 func parseDuration(s string) (time.Duration, error) {

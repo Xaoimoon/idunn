@@ -53,6 +53,7 @@ const (
 	KindGuard          Kind = "guard"
 	KindHeadFailed     Kind = "head_failed"
 	KindCleanupFailed  Kind = "cleanup_failed"
+	KindNewVersion     Kind = "new_version"
 )
 
 // Event is one notable outcome of a pass. Fields not relevant to a Kind stay
@@ -76,6 +77,11 @@ type Event struct {
 	StatusCode int
 
 	Nodes []string // guard: "name (state/availability)"; cleanup: node name
+
+	// New version fields: newest tag available and size of the bump from
+	// the running tag ("patch", "minor" or "major").
+	Tag  string
+	Bump string
 
 	// Startup fields.
 	Version  string

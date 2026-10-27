@@ -19,5 +19,7 @@
 ⚠️ **{{ .Service }}**: cannot check `{{ .Image }}` on {{ .Registry }}{{ if .StatusCode }} (HTTP {{ .StatusCode }}){{ end }}
 {{- else if eq .Kind "cleanup_failed" }}
 ⚠️ Image cleanup failed on {{ join .Nodes ", " }}{{ if .Message }}: {{ .Message }}{{ end }}
+{{- else if eq .Kind "new_version" }}
+🆕 **{{ .Service }}**: {{ .Tag }} available ({{ .Bump }}), running `{{ .Image }}`
 {{- end }}
 {{- end }}

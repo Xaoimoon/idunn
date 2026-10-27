@@ -46,6 +46,7 @@ type Cleaner func(ctx context.Context, repos []string) []notify.Event
 type Updater struct {
 	Docker   cluster.Docker
 	Checker  DigestChecker
+	Lister   TagLister // used by VersionCheck only
 	Auth     AuthEncoder
 	Notifier Notifier
 	Cleaner  Cleaner
@@ -58,7 +59,8 @@ type Updater struct {
 	Now          func() time.Time
 	PollInterval time.Duration
 
-	passMu sync.Mutex
+	passMu    sync.Mutex
+	versionMu sync.Mutex
 
 	mu               sync.Mutex
 	firstSeen        map[string]seen   // image -> newest digest and when it was first seen

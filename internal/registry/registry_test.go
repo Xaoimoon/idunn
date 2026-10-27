@@ -76,6 +76,17 @@ func newFakeRegistry(t *testing.T) *fakeRegistry {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/tags/list") {
+			// Two pages, linked like Docker Hub does.
+			w.Header().Set("Content-Type", "application/json")
+			if r.URL.Query().Get("last") == "" {
+				w.Header().Set("Link", `</v2/public/app/tags/list?n=2&last=1.1>; rel="next"`)
+				_ = json.NewEncoder(w).Encode(map[string]any{"name": "public/app", "tags": []string{"1.0", "1.1"}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"name": "public/app", "tags": []string{"2.0", "latest"}})
+			return
+		}
 		w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
 		w.Header().Set("Content-Length", "100")
 		w.Header().Set("Docker-Content-Digest", indexDigest)
@@ -157,6 +168,27 @@ func TestDigestErrors(t *testing.T) {
 	var he *HeadError
 	if !errors.As(err, &he) || he.StatusCode != 0 {
 		t.Errorf("unreachable registry: %v", err)
+	}
+}
+
+func TestTags(t *testing.T) {
+	f := newFakeRegistry(t)
+	creds, _ := LoadCredentials("")
+	c, _ := NewChecker(creds, "test", true)
+	ctx := context.Background()
+
+	tags, err := c.Tags(ctx, f.host()+"/public/app:1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(tags, ",") != "1.0,1.1,2.0,latest" {
+		t.Errorf("tags = %v, want both pages", tags)
+	}
+
+	_, err = c.Tags(ctx, f.host()+"/limited/app:1.0")
+	var he *HeadError
+	if !errors.As(err, &he) || !he.RateLimited() {
+		t.Errorf("limited: err = %v, want HTTP 429", err)
 	}
 }
 

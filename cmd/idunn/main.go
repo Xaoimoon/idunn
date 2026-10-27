@@ -143,6 +143,7 @@ func run() error {
 	u := &updater.Updater{
 		Docker:   docker,
 		Checker:  checker,
+		Lister:   checker,
 		Auth:     creds,
 		Notifier: notifier,
 		Config:   cfg,
@@ -161,7 +162,20 @@ func run() error {
 
 	if cfg.RunOnce {
 		u.Pass(ctx)
+		if cfg.VersionCheck {
+			u.VersionCheck(ctx)
+		}
 		return nil
+	}
+
+	// The version check has its own daily schedule, whatever drives the passes.
+	if cfg.VersionCheck {
+		vc := cron.New(cron.WithSeconds(), cron.WithLocation(time.Local))
+		if _, err := vc.AddFunc(cfg.VersionSchedule, func() { u.VersionCheck(ctx) }); err != nil {
+			return fmt.Errorf("IDUNN_VERSION_SCHEDULE: %w", err)
+		}
+		vc.Start()
+		defer func() { <-vc.Stop().Done() }()
 	}
 
 	if cfg.Interval > 0 {
@@ -222,9 +236,13 @@ func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, 
 	for i, s := range services {
 		names[i] = s.Spec.Name
 	}
+	versionCheck := "off"
+	if cfg.VersionCheck {
+		versionCheck = cfg.VersionSchedule + " (" + cfg.VersionLevel.String() + ")"
+	}
 	log.Info("idunn started",
 		"version", version, "node", nodeName, "container", host,
-		"schedule", scheduleDesc, "timezone", time.Local.String(),
+		"schedule", scheduleDesc, "version_check", versionCheck, "timezone", time.Local.String(),
 		"blackout", strings.Join(blackout, ","), "filter", cfg.LabelFilter.String(),
 		"ignore", cfg.LabelIgnore.String(), "min_age", cfg.MinAge.String(),
 		"mode", strings.Join(mode, ","), "tracked", len(services))
