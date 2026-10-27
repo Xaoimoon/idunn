@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/idunn-logo.png" alt="Iðunn" width="220"></p>
+
 # Iðunn
 
 Iðunn keeps Docker Swarm services on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
