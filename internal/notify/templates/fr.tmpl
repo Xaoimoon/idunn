@@ -1,6 +1,6 @@
 {{- range .Events }}
 {{- if eq .Kind "startup" }}
-🍏 Iðunn {{ .Version }} démarré sur {{ .Node }} : {{ .Tracked }} services suivis, planification {{ .Schedule }}{{ if .Blackout }}, exclusion {{ .Blackout }}{{ end }}{{ if .Mode }} ({{ .Mode }}){{ end }}
+Iðunn {{ .Version }} démarré sur {{ .Node }} : {{ .Tracked }} services suivis, planification {{ .Schedule }}{{ if .Blackout }}, exclusion {{ .Blackout }}{{ end }}{{ if .Mode }} ({{ .Mode }}){{ end }}
 {{- else if eq .Kind "updated" }}
 ✅ **{{ .Service }}** mis à jour : `{{ .Image }}` {{ short .OldDigest }} → {{ short .NewDigest }} en {{ dur .Duration }}
 {{- else if eq .Kind "pending" }}
@@ -21,5 +21,11 @@
 ⚠️ Nettoyage des images en échec sur {{ join .Nodes ", " }}{{ if .Message }} : {{ .Message }}{{ end }}
 {{- else if eq .Kind "new_version" }}
 🆕 **{{ .Service }}** : {{ .Tag }} disponible ({{ if eq .Bump "major" }}majeure{{ else if eq .Bump "minor" }}mineure{{ else }}correctif{{ end }}), en service `{{ .Image }}`
+{{- else if eq .Kind "self_update" }}
+⬆️ Iðunn se met à jour : `{{ .Image }}` {{ short .OldDigest }} → {{ short .NewDigest }} ; la nouvelle version s'annoncera au démarrage
+{{- else if eq .Kind "self_update_failed" }}
+🛑 Iðunn n'a pas pu se mettre à jour{{ if .Message }} : {{ .Message }}{{ end }}
+{{- else if eq .Kind "retry_skipped" }}
+↩️ **{{ .Service }}** : `{{ .Image }}` {{ short .NewDigest }} a été annulée par un rollback, pas de nouvel essai avant une image plus récente
 {{- end }}
 {{- end }}

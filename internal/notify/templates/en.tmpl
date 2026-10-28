@@ -1,6 +1,6 @@
 {{- range .Events }}
 {{- if eq .Kind "startup" }}
-🍏 Iðunn {{ .Version }} started on {{ .Node }}: {{ .Tracked }} services tracked, schedule {{ .Schedule }}{{ if .Blackout }}, blackout {{ .Blackout }}{{ end }}{{ if .Mode }} ({{ .Mode }}){{ end }}
+Iðunn {{ .Version }} started on {{ .Node }}: {{ .Tracked }} services tracked, schedule {{ .Schedule }}{{ if .Blackout }}, blackout {{ .Blackout }}{{ end }}{{ if .Mode }} ({{ .Mode }}){{ end }}
 {{- else if eq .Kind "updated" }}
 ✅ **{{ .Service }}** updated: `{{ .Image }}` {{ short .OldDigest }} → {{ short .NewDigest }} in {{ dur .Duration }}
 {{- else if eq .Kind "pending" }}
@@ -21,5 +21,11 @@
 ⚠️ Image cleanup failed on {{ join .Nodes ", " }}{{ if .Message }}: {{ .Message }}{{ end }}
 {{- else if eq .Kind "new_version" }}
 🆕 **{{ .Service }}**: {{ .Tag }} available ({{ .Bump }}), running `{{ .Image }}`
+{{- else if eq .Kind "self_update" }}
+⬆️ Iðunn is updating itself: `{{ .Image }}` {{ short .OldDigest }} → {{ short .NewDigest }}; the new version announces itself once started
+{{- else if eq .Kind "self_update_failed" }}
+🛑 Iðunn could not update itself{{ if .Message }}: {{ .Message }}{{ end }}
+{{- else if eq .Kind "retry_skipped" }}
+↩️ **{{ .Service }}**: `{{ .Image }}` {{ short .NewDigest }} was rolled back, not retried until a newer image is published
 {{- end }}
 {{- end }}

@@ -54,6 +54,9 @@ const (
 	KindHeadFailed     Kind = "head_failed"
 	KindCleanupFailed  Kind = "cleanup_failed"
 	KindNewVersion     Kind = "new_version"
+	KindSelfUpdate     Kind = "self_update"
+	KindSelfFailed     Kind = "self_update_failed"
+	KindRetrySkipped   Kind = "retry_skipped"
 )
 
 // Event is one notable outcome of a pass. Fields not relevant to a Kind stay

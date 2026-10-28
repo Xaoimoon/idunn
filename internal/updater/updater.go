@@ -66,6 +66,7 @@ type Updater struct {
 	firstSeen        map[string]seen   // image -> newest digest and when it was first seen
 	notifiedPending  map[string]string // service ID -> digest already notified as pending
 	notifiedDetected map[string]string // service ID -> digest already notified in monitor-only
+	notifiedRetry    map[string]string // service ID -> rolled-back digest already notified
 	notifiedHead     map[string]bool   // image -> HEAD failure already notified
 	guardNotified    bool
 }
@@ -96,6 +97,7 @@ func (u *Updater) init() {
 		u.firstSeen = map[string]seen{}
 		u.notifiedPending = map[string]string{}
 		u.notifiedDetected = map[string]string{}
+		u.notifiedRetry = map[string]string{}
 		u.notifiedHead = map[string]bool{}
 	}
 }
@@ -132,6 +134,7 @@ type pass struct {
 	updatedRepo map[string]bool
 	checked     map[string]bool
 	leaderLost  bool
+	selfApply   func() // self-update, run once the report is sent
 }
 
 type digestResult struct {
@@ -218,6 +221,15 @@ func (u *Updater) Pass(ctx context.Context) {
 	}
 	wg.Wait()
 
+	// Iðunn's own service comes last: updating it stops this instance.
+	if u.Config.SelfUpdate && u.Self.ServiceID != "" && !p.leaderLost && ctx.Err() == nil {
+		if res, err := u.Docker.ServiceInspect(ctx, u.Self.ServiceID, client.ServiceInspectOptions{}); err != nil {
+			u.Log.Error("cannot inspect own service, self-update skipped", "error", err)
+		} else {
+			u.service(ctx, p, res.Service)
+		}
+	}
+
 	u.forgetUnchecked(p)
 
 	if len(p.updatedRepo) > 0 && u.Config.Cleanup && u.Cleaner != nil && !p.leaderLost {
@@ -233,6 +245,9 @@ func (u *Updater) Pass(ctx context.Context) {
 
 	u.Log.Info("pass finished", "events", len(p.events))
 	u.Notifier.Send(ctx, p.events)
+	if p.selfApply != nil {
+		p.selfApply()
+	}
 }
 
 // guard checks node availability. It returns false, with an event the first
@@ -323,6 +338,15 @@ func (u *Updater) service(ctx context.Context, p *pass, svc swarm.Service) {
 		log.Debug("up to date", "digest", notify.ShortDigest(latest))
 		return
 	}
+	if rolledBack(svc, latest) {
+		// Retrying would fail and roll back again at every pass.
+		log.Warn("new image was rolled back, not retried until a newer one", "digest", notify.ShortDigest(latest))
+		if u.markOnce(u.notifiedRetry, t.ID, latest) {
+			p.add(notify.Event{Kind: notify.KindRetrySkipped, Level: notify.Warn, Time: u.now(), Service: t.Name,
+				Image: t.Image, NewDigest: latest})
+		}
+		return
+	}
 
 	now := u.now()
 	first := u.observe(t.Image, latest, now)
@@ -346,6 +370,18 @@ func (u *Updater) service(ctx context.Context, p *pass, svc swarm.Service) {
 			p.add(notify.Event{Kind: notify.KindDetected, Level: notify.Info, Time: now, Service: t.Name,
 				Image: t.Image, NewDigest: latest})
 		}
+		return
+	}
+
+	if t.ID == u.Self.ServiceID {
+		// Swarm stops this instance while replacing it: the report goes out
+		// first, and the outcome is left to the service's update_config.
+		log.Info("self-update scheduled at the end of the pass", "from", notify.ShortDigest(t.Current), "to", notify.ShortDigest(latest))
+		p.add(notify.Event{Kind: notify.KindSelfUpdate, Level: notify.Info, Time: now, Service: t.Name,
+			Image: t.Image, OldDigest: t.Current, NewDigest: latest})
+		p.mu.Lock()
+		p.selfApply = func() { u.updateSelf(ctx, svc, t, latest) }
+		p.mu.Unlock()
 		return
 	}
 
@@ -422,6 +458,7 @@ func (u *Updater) forgetService(serviceID string) {
 	u.mu.Lock()
 	delete(u.notifiedPending, serviceID)
 	delete(u.notifiedDetected, serviceID)
+	delete(u.notifiedRetry, serviceID)
 	u.mu.Unlock()
 }
 
@@ -449,10 +486,7 @@ func (u *Updater) update(ctx context.Context, log *slog.Logger, svc swarm.Servic
 		log.Error("cannot build registry auth", "error", redact.Error(err))
 		return ev, false
 	}
-	spec := svc.Spec
-	cs := *spec.TaskTemplate.ContainerSpec
-	cs.Image = t.Image + "@" + digest
-	spec.TaskTemplate.ContainerSpec = &cs
+	spec := pinnedSpec(svc, t, digest)
 
 	log.Info("updating", "from", notify.ShortDigest(t.Current), "to", notify.ShortDigest(digest))
 	start := u.now()
@@ -511,6 +545,62 @@ func (u *Updater) update(ctx context.Context, log *slog.Logger, svc swarm.Servic
 	ev.Kind, ev.Level, ev.Message = notify.KindRollbackFailed, notify.Error, reason
 	log.Error("rollback not completed", "state", rbState, "message", reason)
 	return ev, true
+}
+
+// pinnedSpec returns the service spec with the reference image pinned to digest.
+func pinnedSpec(svc swarm.Service, t target, digest string) swarm.ServiceSpec {
+	spec := svc.Spec
+	cs := *spec.TaskTemplate.ContainerSpec
+	cs.Image = t.Image + "@" + digest
+	spec.TaskTemplate.ContainerSpec = &cs
+	return spec
+}
+
+// rolledBack reports whether the last update of the service, to digest, was
+// rolled back, by Iðunn or by the service's own update_config. Swarm keeps the
+// rolled-back spec as the previous one.
+func rolledBack(svc swarm.Service, digest string) bool {
+	us := svc.UpdateStatus
+	if us == nil || svc.PreviousSpec == nil || svc.PreviousSpec.TaskTemplate.ContainerSpec == nil {
+		return false
+	}
+	switch us.State {
+	case swarm.UpdateStateRollbackCompleted, swarm.UpdateStateRollbackPaused:
+	default:
+		return false
+	}
+	return strings.HasSuffix(svc.PreviousSpec.TaskTemplate.ContainerSpec.Image, "@"+digest)
+}
+
+// updateSelf asks Swarm to move Iðunn's own service to digest and returns
+// without waiting: this instance is about to be replaced. A failure to start
+// the new version is handled by the service's update_config (failure_action:
+// rollback), and rolledBack keeps the next instance from retrying it.
+func (u *Updater) updateSelf(ctx context.Context, svc swarm.Service, t target, digest string) {
+	log := u.Log.With("service", t.Name, "image", t.Image)
+	fail := func(msg string) {
+		log.Error("self-update failed", "error", msg)
+		u.Notifier.Send(ctx, []notify.Event{{Kind: notify.KindSelfFailed, Level: notify.Error, Time: u.now(),
+			Service: t.Name, Image: t.Image, NewDigest: digest, Message: msg}})
+	}
+	auth, err := u.Auth.EncodedAuth(t.Image)
+	if err != nil {
+		fail("cannot build registry auth: " + redact.Error(err).Error())
+		return
+	}
+	res, err := u.Docker.ServiceUpdate(ctx, t.ID, client.ServiceUpdateOptions{
+		Version:             svc.Version,
+		Spec:                pinnedSpec(svc, t, digest),
+		EncodedRegistryAuth: auth,
+	})
+	if err != nil {
+		fail(redact.String(err.Error()))
+		return
+	}
+	for _, w := range res.Warnings {
+		log.Warn("swarm warning", "warning", w)
+	}
+	log.Info("self-update started, Swarm is replacing this instance", "to", notify.ShortDigest(digest))
 }
 
 func (u *Updater) rollback(ctx context.Context, log *slog.Logger, t target) (swarm.UpdateState, string) {

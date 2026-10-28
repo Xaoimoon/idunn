@@ -146,6 +146,9 @@ func (f *fakeDocker) ServiceUpdate(_ context.Context, id string, opts client.Ser
 		s.PreviousSpec = &swarm.ServiceSpec{}
 		*s.PreviousSpec = s.Spec
 		s.Spec = opts.Spec
+	} else if s.PreviousSpec != nil {
+		// Like Swarm: the rolled-back spec becomes the previous one.
+		s.Spec, *s.PreviousSpec = *s.PreviousSpec, s.Spec
 	}
 	f.onUpdate(s, opts)
 	return client.ServiceUpdateResult{}, nil

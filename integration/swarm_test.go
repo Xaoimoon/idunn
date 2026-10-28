@@ -284,6 +284,18 @@ func TestFailedUpdateIsRolledBack(t *testing.T) {
 		t.Fatalf("events = %+v", ev)
 	}
 	t.Logf("rollback reason: %s", ev[0].Message)
+
+	// Next pass: Swarm kept the rolled-back spec as the previous one, so the
+	// same broken digest is not tried again.
+	v := e.version(id)
+	u.Pass(e.ctx)
+	if e.version(id) != v {
+		t.Error("the rolled-back digest was retried")
+	}
+	ev = events.forService("it_flaky")
+	if len(ev) != 2 || ev[1].Kind != notify.KindRetrySkipped {
+		t.Errorf("events after the second pass = %+v", ev)
+	}
 }
 
 func TestPinnedMonitorOnlyAndDryRun(t *testing.T) {

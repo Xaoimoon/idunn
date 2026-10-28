@@ -2,6 +2,7 @@ package updater
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/notify"
 	"github.com/xaoimoon/idunn/internal/redact"
+	"github.com/xaoimoon/idunn/internal/registry"
 	"github.com/xaoimoon/idunn/internal/versions"
 )
 
@@ -63,6 +65,7 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 		err  error
 	}
 	byRepo := map[string]listing{} // one tag listing per repository
+	skipped := map[string]bool{}   // registries that timed out or answered 429
 	var events []notify.Event
 	for _, svc := range services {
 		if ctx.Err() != nil {
@@ -89,12 +92,25 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 			continue
 		}
 		repo := ref.Context().Name()
+		reg := ref.Context().RegistryStr()
 		l, done := byRepo[repo]
+		if !done && skipped[reg] {
+			log.Debug("registry skipped for the rest of this check", "image", image, "registry", reg)
+			continue
+		}
 		if !done {
 			lctx, cancel := context.WithTimeout(ctx, listTimeout)
 			l.tags, l.err = u.Lister.Tags(lctx, image)
 			cancel()
 			byRepo[repo] = l
+			// A registry that is too slow or rate limited would fail the same
+			// way for its other repositories: stop asking it until next check.
+			var he *registry.HeadError
+			if l.err != nil && ctx.Err() == nil &&
+				(errors.Is(l.err, context.DeadlineExceeded) || (errors.As(l.err, &he) && he.RateLimited())) {
+				skipped[reg] = true
+				log.Warn("registry skipped for the rest of this check", "registry", reg)
+			}
 		}
 		if l.err != nil {
 			log.Warn("cannot list tags", "image", image, "error", redact.Error(l.err))

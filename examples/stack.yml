@@ -13,6 +13,7 @@ services:
       # IDUNN_MIN_AGE: "6h"             # wait before applying a new image
       # IDUNN_MONITOR_ONLY: "true"      # detect and notify only
       # IDUNN_VERSION_CHECK: "true"     # daily report of newer version tags
+      # IDUNN_SELF_UPDATE: "true"       # let Iðunn update its own service
       IDUNN_NOTIFICATION_URL_FILE: /run/secrets/idunn_notification_url
     secrets:
       - idunn_notification_url
@@ -25,11 +26,14 @@ services:
         constraints:
           - node.role == manager
       labels:
-        idunn.enable: "false" # Iðunn is upgraded by redeploying this stack
+        # Upgraded by redeploying this stack, or set IDUNN_SELF_UPDATE=true (and
+        # failure_action: rollback below) to let Iðunn update itself.
+        idunn.enable: "false"
       restart_policy:
         condition: any
       update_config:
         order: stop-first
+        failure_action: rollback # undoes a self-update whose new version fails to start
       resources:
         limits:
           memory: 64M

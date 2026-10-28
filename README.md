@@ -16,10 +16,11 @@ In Norse mythology, Iðunn keeps the apples that keep the gods young.
 - Maturity delay: a new digest is only applied after it has been seen for a given time; the count restarts if the tag moves again.
 - Cluster guard: no pass while a node is not `Ready` and `Active` (maintenance, reboot).
 - Native updates to `tag@digest`, with the registry credentials forwarded to the nodes; `update_config` (order, parallelism, monitor, failure action) and healthchecks are honoured.
-- Update tracking until `completed`, `paused` or a timeout, then rollback (`previous` spec) if enabled.
+- Update tracking until `completed`, `paused` or a timeout, then rollback (`previous` spec) if enabled. A digest that was rolled back is not retried until a newer one is published.
 - Cleanup of the old images of updated repositories on every node, through a short-lived global job.
 - One report per pass, only when something happened; built-in English and French templates, or your own Go template.
 - Monitor-only (global or per service), dry-run, run-once.
+- Optional self-update: Iðunn updates its own service last, after sending its report, and leaves the outcome to Swarm.
 - Daily report of newer version tags for services pinned to a version (`mariadb:12.3.3`, `forgejo:16`), which Iðunn never updates by itself.
 - Highly available: deployed globally on the managers, only the Raft leader acts, and leadership is checked again before each service.
 - Small and locked down: static binary on a distroless image (~28 MB), unprivileged user with the socket group only, read-only file system, no listening port, stateless.
@@ -30,7 +31,7 @@ In Norse mythology, Iðunn keeps the apples that keep the gods young.
 2. Services carrying the filter label are listed; services carrying the ignore label, and Iðunn itself, are left out.
 3. The reference image is the `com.docker.stack.image` label set by `docker stack deploy` (the image as written in the stack file), else the spec image without its digest. **A reference image pinned by digest is never updated.**
 4. The tag's digest is fetched with a `HEAD` request (for multi-arch images, the index digest, which is what Swarm pins) and compared with the digest in the service spec.
-5. A service whose update is already running is skipped. A new digest waits for the maturity delay, then, unless the service is in monitor-only or dry-run mode, the spec is updated to `tag@digest`.
+5. A service whose update is already running is skipped, and so is a digest whose last update was rolled back (by Iðunn or by the service's own `update_config`), until the tag moves again. A new digest waits for the maturity delay, then, unless the service is in monitor-only or dry-run mode, the spec is updated to `tag@digest`.
 6. Iðunn polls `UpdateStatus` every 5 seconds until `completed`, `rollback_completed`, `paused` or the timeout. On `paused` or timeout, it asks Swarm to roll back (if enabled).
 7. If at least one service changed image, a global job removes the old images of those repositories on every node.
 8. The report is sent.
@@ -62,6 +63,7 @@ All settings are environment variables. Variables marked *secret* also accept a 
 | `IDUNN_MONITOR_ONLY` | `false` | Detect and notify, never update. |
 | `IDUNN_DRY_RUN` | `false` | Log what would be done, without calling any write API and without notifying new images. |
 | `IDUNN_RUN_ONCE` | `false` | Run one pass immediately, then exit. |
+| `IDUNN_SELF_UPDATE` | `false` | Let Iðunn [update its own service](#self-update). |
 | `IDUNN_ROLLBACK_ON_FAILURE` | `true` | Roll back when an update is paused or times out. |
 | `IDUNN_UPDATE_TIMEOUT` | `10m` | Maximum duration of a service update. |
 | `IDUNN_MAX_CONCURRENT` | `1` | Services updated in parallel. |
@@ -104,6 +106,9 @@ A report is sent after a pass only if at least one event reaches `IDUNN_NOTIFICA
 | New image waiting for maturity | info | Once per digest, with the time it will be applied after. |
 | New image detected (monitor-only) | info | Once per digest. |
 | Rolled back | warn | Swarm state and the task error. |
+| Rolled-back image not retried | warn | Once per digest, until a newer image is published. |
+| Self-update started | info | In the report sent just before Iðunn's own service is updated. |
+| Self-update refused | error | Swarm refused the update; Iðunn keeps running the current version. |
 | Pass postponed, node unavailable | warn | Once while the situation lasts. |
 | Image check failed | warn | Registry and HTTP code; once until the check succeeds again. |
 | Cleanup failed on a node | warn | |
@@ -111,7 +116,7 @@ A report is sent after a pass only if at least one event reaches `IDUNN_NOTIFICA
 | Update paused | error | Rollback disabled; manual action required. |
 | Rollback failed | error | Manual action required. |
 
-Custom templates receive `.Events`, a list of events with the fields `Kind` (`startup`, `updated`, `pending`, `detected`, `rollback`, `rollback_failed`, `paused`, `guard`, `head_failed`, `cleanup_failed`, `new_version`), `Level`, `Time`, `Service`, `Image`, `OldDigest`, `NewDigest`, `Duration`, `ApplyAt`, `State`, `Message`, `Registry`, `StatusCode`, `Nodes`, `Tag` and `Bump` (new version), and for startup `Version`, `Node`, `Schedule`, `Blackout`, `Tracked`, `Mode`. Helpers: `short` (12-character digest), `dur`, `clock`, `join`. See [the built-in templates](internal/notify/templates).
+Custom templates receive `.Events`, a list of events with the fields `Kind` (`startup`, `updated`, `pending`, `detected`, `rollback`, `rollback_failed`, `paused`, `guard`, `head_failed`, `cleanup_failed`, `new_version`, `self_update`, `self_update_failed`, `retry_skipped`), `Level`, `Time`, `Service`, `Image`, `OldDigest`, `NewDigest`, `Duration`, `ApplyAt`, `State`, `Message`, `Registry`, `StatusCode`, `Nodes`, `Tag` and `Bump` (new version), and for startup `Version`, `Node`, `Schedule`, `Blackout`, `Tracked`, `Mode`. Helpers: `short` (12-character digest), `dur`, `clock`, `join`. See [the built-in templates](internal/notify/templates).
 
 ## New versions of pinned images
 
@@ -123,7 +128,17 @@ A service pinned to a version (`mariadb:12.3.3`, or a branch such as `forgejo:16
 - The newest tag whose bump reaches the level (`IDUNN_VERSION_LEVEL` or `idunn.version-level`) is reported, with the size of the bump. At `minor`, `12.3.3` → `12.3.4` is ignored but `12.4.0` and `13.0.0` are reported.
 - Each check sends one report listing everything available, and repeats it daily until you upgrade. Nothing is kept between restarts.
 - One tag listing per repository and per check. Listing tags is not an image pull and does not count against Docker Hub pull limits.
-- A listing is abandoned after 2 minutes and the failure is only logged: some registries, such as `docker.elastic.co`, page through an endless list of build tags. Set `idunn.version-level=none` on those services to silence the warning.
+- A listing is abandoned after 2 minutes and the failure is only logged: some registries, such as `docker.elastic.co`, page through an endless list of build tags. A registry that times out or answers `429` is not asked again for the rest of the check. Set `idunn.version-level=none` on those services to silence the warning.
+
+## Self-update
+
+By default Iðunn never touches its own service: you upgrade it by redeploying its stack. With `IDUNN_SELF_UPDATE=true`, it handles its own service like the others (new digest, maturity delay, monitor-only and dry-run modes), with these differences:
+
+- It is checked whatever its opt-in or ignore label, and always last in the pass, after the cleanup.
+- The report, including a "self-update started" line, is sent **before** the update, because Swarm stops the running instance to replace it. Iðunn does not follow the update: the new version announces itself with its startup notification.
+- A failed start is handled by Swarm, so give Iðunn's service `update_config.failure_action: rollback` and keep its healthcheck. The digest that was rolled back is then not retried.
+- The stack file must reference a tag (`idunn:latest`, or a channel tag), not `tag@digest`: an image pinned by digest is never updated.
+- Images left behind by previous Iðunn versions are not removed by its own cleanup job.
 
 ## Private registries
 

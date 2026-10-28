@@ -245,7 +245,7 @@ func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, 
 		"schedule", scheduleDesc, "version_check", versionCheck, "timezone", time.Local.String(),
 		"blackout", strings.Join(blackout, ","), "filter", cfg.LabelFilter.String(),
 		"ignore", cfg.LabelIgnore.String(), "min_age", cfg.MinAge.String(),
-		"mode", strings.Join(mode, ","), "tracked", len(services))
+		"mode", strings.Join(mode, ","), "self_update", cfg.SelfUpdate, "tracked", len(services))
 	log.Info("tracked services", "services", strings.Join(names, " "))
 
 	if leader, err := cluster.IsLeader(ctx, u.Docker, nodeID); err == nil && leader {

@@ -52,6 +52,7 @@ type Config struct {
 	RunOnce     bool
 
 	RollbackOnFailure bool
+	SelfUpdate        bool
 	UpdateTimeout     time.Duration
 	MaxConcurrent     int
 
@@ -92,6 +93,7 @@ func load(lookup lookupFunc, read readFunc) (*Config, error) {
 		DryRun:             e.bool("IDUNN_DRY_RUN", false),
 		RunOnce:            e.bool("IDUNN_RUN_ONCE", false),
 		RollbackOnFailure:  e.bool("IDUNN_ROLLBACK_ON_FAILURE", true),
+		SelfUpdate:         e.bool("IDUNN_SELF_UPDATE", false),
 		UpdateTimeout:      e.duration("IDUNN_UPDATE_TIMEOUT", 10*time.Minute),
 		MaxConcurrent:      e.int("IDUNN_MAX_CONCURRENT", 1),
 		Cleanup:            e.bool("IDUNN_CLEANUP", true),
