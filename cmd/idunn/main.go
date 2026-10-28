@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/xaoimoon/idunn/internal/cleanup"
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/config"
+	"github.com/xaoimoon/idunn/internal/metrics"
 	"github.com/xaoimoon/idunn/internal/notify"
 	"github.com/xaoimoon/idunn/internal/privdrop"
 	"github.com/xaoimoon/idunn/internal/registry"
@@ -151,6 +154,14 @@ func run() error {
 		NodeID:   nodeID,
 		Self:     self,
 	}
+	if cfg.MetricsAddr != "" {
+		reg, stopMetrics, err := serveMetrics(cfg.MetricsAddr, log)
+		if err != nil {
+			return err
+		}
+		defer stopMetrics()
+		u.Metrics = reg
+	}
 	job := &cleanup.Job{Docker: docker, Self: self, Auth: creds, Keep: cfg.CleanupKeep, Ignore: cfg.LabelIgnore, Log: log}
 	u.Cleaner = job.Run
 
@@ -245,7 +256,7 @@ func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, 
 		"schedule", scheduleDesc, "version_check", versionCheck, "timezone", time.Local.String(),
 		"blackout", strings.Join(blackout, ","), "filter", cfg.LabelFilter.String(),
 		"ignore", cfg.LabelIgnore.String(), "min_age", cfg.MinAge.String(),
-		"mode", strings.Join(mode, ","), "self_update", cfg.SelfUpdate, "tracked", len(services))
+		"mode", strings.Join(mode, ","), "self_update", cfg.SelfUpdate, "metrics", cfg.MetricsAddr, "tracked", len(services))
 	log.Info("tracked services", "services", strings.Join(names, " "))
 
 	if leader, err := cluster.IsLeader(ctx, u.Docker, nodeID); err == nil && leader {
@@ -258,6 +269,31 @@ func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, 
 	if _, in := schedule.InBlackout(cfg.Blackout, time.Now()); in {
 		log.Info("currently inside a blackout window")
 	}
+}
+
+// serveMetrics exposes the Prometheus metrics on addr (/metrics only) and
+// returns a function that stops the server.
+func serveMetrics(addr string, log *slog.Logger) (*metrics.Registry, func(), error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("IDUNN_METRICS_ADDR: %w", err)
+	}
+	reg := metrics.New()
+	reg.Set("idunn_build_info", "Iðunn version, always 1.", metrics.Labels{"version": version}, 1)
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", reg.Handler())
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Error("metrics server stopped", "error", err)
+		}
+	}()
+	log.Info("metrics listening", "addr", ln.Addr().String())
+	return reg, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, nil
 }
 
 // health checks that the Docker API answers; the healthcheck runs inside the

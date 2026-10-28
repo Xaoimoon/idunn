@@ -14,6 +14,7 @@ services:
       # IDUNN_MONITOR_ONLY: "true"      # detect and notify only
       # IDUNN_VERSION_CHECK: "true"     # daily report of newer version tags
       # IDUNN_SELF_UPDATE: "true"       # let Iðunn update its own service
+      # IDUNN_METRICS_ADDR: ":9640"     # Prometheus metrics, keep the port internal
       IDUNN_NOTIFICATION_URL_FILE: /run/secrets/idunn_notification_url
     secrets:
       - idunn_notification_url

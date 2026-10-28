@@ -47,6 +47,7 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 		u.Log.Error("cannot check Raft leadership", "error", err)
 		return
 	}
+	u.setLeader(leader)
 	if !leader {
 		return
 	}
@@ -106,6 +107,9 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 			// A registry that is too slow or rate limited would fail the same
 			// way for its other repositories: stop asking it until next check.
 			var he *registry.HeadError
+			if errors.As(l.err, &he) {
+				u.registryError(he)
+			}
 			if l.err != nil && ctx.Err() == nil &&
 				(errors.Is(l.err, context.DeadlineExceeded) || (errors.As(l.err, &he) && he.RateLimited())) {
 				skipped[reg] = true
@@ -126,5 +130,6 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 			Service: svc.Spec.Name, Image: image, Tag: latest, Bump: bump.String()})
 	}
 	u.Log.Info("version check finished", "available", len(events))
+	u.versionsFound(events)
 	u.Notifier.Send(ctx, events)
 }

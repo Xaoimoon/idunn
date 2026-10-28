@@ -74,6 +74,8 @@ type Config struct {
 
 	LogLevel  string
 	LogFormat string
+
+	MetricsAddr string
 }
 
 // Load reads the configuration from the environment.
@@ -107,6 +109,7 @@ func load(lookup lookupFunc, read readFunc) (*Config, error) {
 		NotificationLevel:  strings.ToLower(e.string("IDUNN_NOTIFICATION_LEVEL", "info")),
 		LogLevel:           strings.ToLower(e.string("IDUNN_LOG_LEVEL", "info")),
 		LogFormat:          strings.ToLower(e.string("IDUNN_LOG_FORMAT", "text")),
+		MetricsAddr:        e.string("IDUNN_METRICS_ADDR", ""),
 	}
 
 	sched, schedSet := e.lookupNonEmpty("IDUNN_SCHEDULE")

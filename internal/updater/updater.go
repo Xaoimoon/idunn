@@ -17,6 +17,7 @@ import (
 
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/config"
+	"github.com/xaoimoon/idunn/internal/metrics"
 	"github.com/xaoimoon/idunn/internal/notify"
 	"github.com/xaoimoon/idunn/internal/redact"
 	"github.com/xaoimoon/idunn/internal/registry"
@@ -54,6 +55,7 @@ type Updater struct {
 	Log      *slog.Logger
 	NodeID   string
 	Self     cluster.Self
+	Metrics  *metrics.Registry // nil when metrics are disabled
 
 	// Now and PollInterval are overridable in tests.
 	Now          func() time.Time
@@ -135,6 +137,7 @@ type pass struct {
 	checked     map[string]bool
 	leaderLost  bool
 	selfApply   func() // self-update, run once the report is sent
+	pending     int    // services whose new image waits for maturity
 }
 
 type digestResult struct {
@@ -162,22 +165,28 @@ func (u *Updater) Pass(ctx context.Context) {
 	leader, err := cluster.IsLeader(ctx, u.Docker, u.NodeID)
 	if err != nil {
 		u.Log.Error("cannot check Raft leadership", "error", err)
+		u.passOutcome("error")
 		return
 	}
+	u.setLeader(leader)
 	if !leader {
 		u.Log.Debug("not the Raft leader, standing by")
+		u.passOutcome("standby")
 		return
 	}
 
 	now := u.now()
+	start := now
 	if w, in := schedule.InBlackout(u.Config.Blackout, now); in {
 		u.Log.Info("inside blackout window, pass skipped", "window", w.String())
+		u.passOutcome("blackout")
 		return
 	}
 
 	if u.Config.ClusterGuard {
 		if events, ok := u.guard(ctx); !ok {
 			u.Notifier.Send(ctx, events)
+			u.passOutcome("guard")
 			return
 		}
 	}
@@ -185,6 +194,7 @@ func (u *Updater) Pass(ctx context.Context) {
 	services, err := u.Tracked(ctx)
 	if err != nil {
 		u.Log.Error("cannot list services", "error", err)
+		u.passOutcome("error")
 		return
 	}
 	u.Log.Info("pass started", "services", len(services))
@@ -244,6 +254,7 @@ func (u *Updater) Pass(ctx context.Context) {
 	}
 
 	u.Log.Info("pass finished", "events", len(p.events))
+	u.passFinished(p, start, len(services))
 	u.Notifier.Send(ctx, p.events)
 	if p.selfApply != nil {
 		p.selfApply()
@@ -353,6 +364,9 @@ func (u *Updater) service(ctx context.Context, p *pass, svc swarm.Service) {
 	if t.MinAge > 0 && now.Sub(first) < t.MinAge {
 		applyAt := first.Add(t.MinAge)
 		log.Info("new image waiting for maturity", "digest", notify.ShortDigest(latest), "apply_after", applyAt.Format(time.RFC3339))
+		p.mu.Lock()
+		p.pending++
+		p.mu.Unlock()
 		if u.markOnce(u.notifiedPending, t.ID, latest) {
 			p.add(notify.Event{Kind: notify.KindPending, Level: notify.Info, Time: now, Service: t.Name,
 				Image: t.Image, NewDigest: latest, ApplyAt: applyAt})
@@ -403,6 +417,7 @@ func (u *Updater) headFailed(p *pass, log *slog.Logger, t target, err error) {
 		return
 	}
 	log.Warn("cannot check image", "registry", he.Registry, "status", he.StatusCode, "error", redact.Error(err))
+	u.registryError(he)
 	notifyIt := false
 	switch u.Config.HeadFailureWarn {
 	case config.HeadWarnAlways:
