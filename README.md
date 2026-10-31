@@ -2,9 +2,9 @@
 
 # Iðunn
 
-Iðunn keeps Docker Swarm services on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
+Iðunn keeps Docker Swarm services, or the standalone containers of a Docker engine, on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
 
-It brings together what [Watchtower](https://github.com/nicholas-fedor/watchtower) does well for standalone containers (built-in notifications, rich settings, cheap detection) and what makes [Shepherd](https://github.com/containrrr/shepherd) safe on Swarm (native service updates, rollback). For standalone containers and Compose projects, keep using Watchtower.
+It brings together what [Watchtower](https://github.com/nicholas-fedor/watchtower) does well for standalone containers (built-in notifications, rich settings, cheap detection) and what makes [Shepherd](https://github.com/containrrr/shepherd) safe on Swarm (native service updates, rollback). On a standalone engine, it recreates containers the way Watchtower does, with a health check and a rollback on top: see [engine mode](#standalone-containers-engine-mode).
 
 In Norse mythology, Iðunn keeps the apples that keep the gods young.
 
@@ -23,8 +23,9 @@ In Norse mythology, Iðunn keeps the apples that keep the gods young.
 - Optional self-update: Iðunn updates its own service last, after sending its report, and leaves the outcome to Swarm.
 - Daily report of newer version tags for services pinned to a version (`mariadb:12.3.3`, `forgejo:16`), which Iðunn never updates by itself.
 - Highly available: deployed globally on the managers, only the Raft leader acts, and leadership is checked again before each service.
-- Small and locked down: static binary on a distroless image (~28 MB), unprivileged user with the socket group only, read-only file system, no listening port unless metrics are enabled, stateless.
+- Small and locked down: static binary on a distroless image (~28 MB), unprivileged user with the socket group only (Swarm mode), read-only file system, no listening port unless metrics are enabled, stateless.
 - Optional Prometheus metrics: passes, updates and rollbacks per service, pending images, registry errors, newer versions available.
+- [Engine mode](#standalone-containers-engine-mode) for standalone containers and Compose projects: recreation from the container's own configuration, health check, rollback to the old container, dependent containers recreated in order, self-update.
 
 ## How a pass works
 
@@ -53,21 +54,23 @@ All settings are environment variables. Variables marked *secret* also accept a 
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `IDUNN_MODE` | `auto` | `swarm`, `engine`, or `auto`: [engine mode](#standalone-containers-engine-mode) when the engine is not part of a Swarm, Swarm mode otherwise. |
 | `IDUNN_SCHEDULE` | `0 0 * * * *` | Cron expression with seconds (6 fields). Mutually exclusive with `IDUNN_INTERVAL`. |
 | `IDUNN_INTERVAL` | | Fixed interval (e.g. `6h`), instead of the cron schedule. |
 | `TZ` | `UTC` | Time zone of the schedule, the blackout windows and the timestamps. |
 | `IDUNN_BLACKOUT` | | Comma-separated windows with no update: `HH:MM-HH:MM`, optionally prefixed by a day (`Sat 22:00-23:59`). A window may cross midnight. |
-| `IDUNN_CLUSTER_GUARD` | `true` | Postpone the pass while a node is not `Ready` and `Active`. |
+| `IDUNN_CLUSTER_GUARD` | `true` | Postpone the pass while a node is not `Ready` and `Active`. Swarm mode only. |
 | `IDUNN_LABEL_FILTER` | `idunn.enable=true` | Label that opts a service in. |
 | `IDUNN_LABEL_IGNORE` | `idunn.enable=false` | Label that opts a service out; wins over the filter. |
+| `IDUNN_COMPOSE_DEPENDS_ON` | `false` | Engine mode: also treat Compose `depends_on` as a [dependency](#dependencies). |
 | `IDUNN_MIN_AGE` | `0` | Maturity delay of a new image (e.g. `6h`); `0` disables it. |
 | `IDUNN_MONITOR_ONLY` | `false` | Detect and notify, never update. |
 | `IDUNN_DRY_RUN` | `false` | Log what would be done, without calling any write API and without notifying new images. |
 | `IDUNN_RUN_ONCE` | `false` | Run one pass immediately, then exit. |
 | `IDUNN_SELF_UPDATE` | `false` | Let Iðunn [update its own service](#self-update). |
 | `IDUNN_ROLLBACK_ON_FAILURE` | `true` | Roll back when an update is paused or times out. |
-| `IDUNN_UPDATE_TIMEOUT` | `10m` | Maximum duration of a service update. |
-| `IDUNN_MAX_CONCURRENT` | `1` | Services updated in parallel. |
+| `IDUNN_UPDATE_TIMEOUT` | `10m` | Maximum duration of a service update; in engine mode, how long a new container has to become healthy. |
+| `IDUNN_MAX_CONCURRENT` | `1` | Services updated in parallel. Swarm mode only: containers are updated one at a time. |
 | `IDUNN_CLEANUP` | `true` | Remove old images after updates. |
 | `IDUNN_CLEANUP_KEEP` | `1` | Unused images kept per repository and per node, besides the one in use. |
 | `IDUNN_VERSION_CHECK` | `false` | Enable the [version check](#new-versions-of-pinned-images). |
@@ -86,7 +89,7 @@ All settings are environment variables. Variables marked *secret* also accept a 
 
 ### Service labels
 
-Set them in `deploy.labels`; they override the global settings for that service.
+Set them in `deploy.labels`, or on the container itself in engine mode; they override the global settings for that service.
 
 | Label | Effect |
 | --- | --- |
@@ -96,6 +99,7 @@ Set them in `deploy.labels`; they override the global settings for that service.
 | `idunn.timeout=<duration>` | Update timeout for this service (e.g. `20m` for a heavy image). |
 | `idunn.rollback=false` | Disables the rollback for this service. |
 | `idunn.version-level=<level>` | Smallest bump reported by the version check for this service: `patch`, `minor`, `major`, or `none` to leave it out. |
+| `idunn.depends-on=<names>` | Engine mode: comma-separated containers this one [depends on](#dependencies). |
 
 ## Notifications
 
@@ -103,7 +107,7 @@ A report is sent after a pass only if at least one event reaches `IDUNN_NOTIFICA
 
 | Event | Level | Notes |
 | --- | --- | --- |
-| Startup | info | Sent by the leader only. |
+| Startup | info | Sent by the leader only (by the single instance in engine mode). |
 | Service updated | info | Old and new digest, duration. |
 | New image waiting for maturity | info | Once per digest, with the time it will be applied after. |
 | New image detected (monitor-only) | info | Once per digest. |
@@ -117,6 +121,8 @@ A report is sent after a pass only if at least one event reaches `IDUNN_NOTIFICA
 | Newer version available | info | Version check only: one report per check, listing every service with a newer tag. |
 | Update paused | error | Rollback disabled; manual action required. |
 | Rollback failed | error | Manual action required. |
+
+In engine mode, `Service` holds the container name.
 
 Custom templates receive `.Events`, a list of events with the fields `Kind` (`startup`, `updated`, `pending`, `detected`, `rollback`, `rollback_failed`, `paused`, `guard`, `head_failed`, `cleanup_failed`, `new_version`, `self_update`, `self_update_failed`, `retry_skipped`), `Level`, `Time`, `Service`, `Image`, `OldDigest`, `NewDigest`, `Duration`, `ApplyAt`, `State`, `Message`, `Registry`, `StatusCode`, `Nodes`, `Tag` and `Bump` (new version), and for startup `Version`, `Node`, `Schedule`, `Blackout`, `Tracked`, `Mode`. Helpers: `short` (12-character digest), `dur`, `clock`, `join`. See [the built-in templates](internal/notify/templates).
 
@@ -142,9 +148,55 @@ By default Iðunn never touches its own service: you upgrade it by redeploying i
 - The stack file must reference a tag (`idunn:latest`, or a channel tag), not `tag@digest`: an image pinned by digest is never updated.
 - Images left behind by previous Iðunn versions are not removed by its own cleanup job.
 
+## Standalone containers (engine mode)
+
+On an engine that is not part of a Swarm (or with `IDUNN_MODE=engine`), Iðunn updates the running containers of that engine. Selection, schedule, blackout windows, maturity delay, monitor-only, dry-run, notifications, cleanup and the version check work as for services; the cluster guard and leadership do not apply, and one instance runs per engine.
+
+```sh
+docker run -d --name idunn --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e IDUNN_NOTIFICATION_URL='discord://token@webhookid' \
+  idunn:latest
+```
+
+See also [examples/compose.yml](examples/compose.yml). Opt the containers in with the `idunn.enable=true` label (`labels:` in a Compose file).
+
+### How a container is updated
+
+1. The reference image is the image as given at creation (`nginx:1.27`, as written in the Compose file). A container created from `image@digest` or from an image ID is never updated, nor is one whose image was built locally.
+2. The tag's digest is fetched with a `HEAD` request and compared with the digests of the image the container runs. A container whose image lost its tag (someone pulled the tag meanwhile) is updated.
+3. Once the maturity delay is over, Iðunn pulls the tag, renames the container with an `-idunn-old` suffix and creates the new one under its name, from the same configuration.
+4. The old container is stopped, the new one started. Iðunn waits until it reports `healthy` when the image has a healthcheck, or until it has kept running for 60 seconds without one, within `IDUNN_UPDATE_TIMEOUT`.
+5. On success the old container is removed. On failure (it exits, restarts, turns `unhealthy` or times out), the new container is removed and the old one starts again under its name; that digest is not retried until a newer one is published. With rollback disabled, the new container is left as is and the old one stays stopped, renamed.
+
+What the new container keeps, like Watchtower:
+
+- Everything set on the container: environment, command, ports, mounts, networks with their aliases and static addresses, restart policy, resources, labels.
+- Not what came from the old image (environment, command, entrypoint, working directory, user, exposed ports, volumes, healthcheck, labels with the same value): the new image's own values apply. The selection labels always stay.
+- Anonymous volumes are mounted again, so their data survives. Named volumes and bind mounts are part of the configuration anyway.
+- The Compose labels: Compose and Portainer still see the container as part of its project. `com.docker.compose.image` is set to the new image. The Compose file is never modified, and a later redeploy of the project recreates the container from the same tag.
+
+Containers of a Compose project are handled one by one, each with its own outcome: a rollback on one does not stop the others. Containers managed by Swarm are left alone.
+
+### Dependencies
+
+A container depends on another when it uses its network (`network_mode: container:` or `service:`), IPC or PID namespace, or volumes (`volumes_from`), when it links to it, when it lists it in the `idunn.depends-on` label, and, with `IDUNN_COMPOSE_DEPENDS_ON=true`, through Compose `depends_on`.
+
+Containers are updated after the ones they depend on. When a container is recreated (updated or rolled back), the tracked containers that depend on it are recreated too, with their current image and pointing at the new container: a container sharing the network of a VPN container, for instance, would otherwise lose its network. A dependent that is not tracked is left as is, with a warning in the logs.
+
+### Self-update in engine mode
+
+With `IDUNN_SELF_UPDATE=true`, Iðunn updates its own container last, without stopping first:
+
+1. The running instance renames itself with the `-idunn-old` suffix and starts the new container under its name, with an `idunn.replaces` label naming the old one.
+2. The new instance waits, doing nothing, while the old one runs. The old one waits for it to be healthy.
+3. Healthy: the old instance stops itself, and the new one removes it, then announces itself with its startup notification. Otherwise the old instance removes the new container, takes its name back and goes on; that digest is not retried.
+
+A hand-over interrupted by a reboot is completed or undone when the old instance starts again. Do not publish ports on Iðunn's container (such as the metrics port): both instances run side by side for a moment.
+
 ## Metrics
 
-With `IDUNN_METRICS_ADDR` set, every instance serves `/metrics` in the Prometheus text format. Only the Raft leader runs passes, so scrape all instances and use `idunn_leader` to tell them apart; counters restart from zero when an instance restarts.
+With `IDUNN_METRICS_ADDR` set, every instance serves `/metrics` in the Prometheus text format. Only the Raft leader runs passes, so scrape all instances and use `idunn_leader` to tell them apart (always 1 in engine mode); counters restart from zero when an instance restarts. In engine mode, the `service` label holds the container name.
 
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -165,13 +217,13 @@ A stale `idunn_last_pass_timestamp_seconds` on the leader (more than two schedul
 
 ## Private registries
 
-Mount a Docker `config.json` as a secret and point `IDUNN_REGISTRY_AUTH_FILE` at it. Iðunn uses it for its `HEAD` requests and tag listings, and forwards the matching credentials with each service update, so that every node can pull the image. Only static credentials (`auth`, `username`/`password`, `identitytoken`) are supported, not credential helpers.
+Mount a Docker `config.json` as a secret and point `IDUNN_REGISTRY_AUTH_FILE` at it. Iðunn uses it for its `HEAD` requests and tag listings, and forwards the matching credentials with each service update, so that every node can pull the image, or with each pull in engine mode. Only static credentials (`auth`, `username`/`password`, `identitytoken`) are supported, not credential helpers.
 
 Registry mirrors configured on the Docker daemons keep serving the pulls: Iðunn only talks to the registry for `HEAD` requests.
 
 ## Security
 
-Iðunn needs the Docker socket of a manager, which grants full control of the cluster. Its code is kept small and its API use narrow:
+Iðunn needs the Docker socket of a manager, which grants full control of the cluster. Its code is kept small and its API use narrow. In Swarm mode:
 
 - Read: `Info`, `NodeInspect`, `NodeList`, `ServiceList`, `ServiceInspect`, `TaskList`, and `ContainerInspect` on its own container (to identify its service and image).
 - Write: `ServiceUpdate` on the selected services, and `ServiceCreate` / `ServiceRemove` for the cleanup job only.
@@ -179,11 +231,18 @@ Iðunn needs the Docker socket of a manager, which grants full control of the cl
 - No container creation, no exec. No listening port, unless `IDUNN_METRICS_ADDR` is set: the metrics endpoint is read-only and unauthenticated, so keep it on an internal network.
 - Secrets are only read from files or environment variables, and are masked in logs, notifications and errors.
 
+In engine mode, Iðunn necessarily recreates containers:
+
+- Read: `Info`, `ContainerList`, `ContainerInspect`, `ImageInspect`.
+- Write, on the tracked containers and their dependents only: `ImagePull`, `ContainerRename`, `ContainerCreate`, `NetworkConnect`, `ContainerStop`, `ContainerStart`, `ContainerRemove` (never with their volumes); `ImageList` and `ImageRemove` for the cleanup, never forced. No exec.
+
 ### User and socket group
 
 The image starts as root only long enough to read the group owning the Docker socket, then switches for good to user `65532` with that group as its only supplementary group, and no capabilities. It exits if the switch fails. This works even when the socket group ID differs between managers, which a fixed `user:` cannot handle (and `group_add` is not supported by `docker stack deploy`). The cleanup job does the same.
 
 If every manager shares the same socket group, you may instead set `user: "65532:<gid>"`; Iðunn then runs as given and skips the switch. Either way, use `read_only: true`.
+
+In engine mode, Iðunn keeps running as root, like Watchtower: it does not switch user. Access to the Docker socket grants root on the host anyway.
 
 ## Healthcheck
 
@@ -193,11 +252,11 @@ If every manager shares the same socket group, you may instead set `user: "65532
 
 ```sh
 go test ./...                    # unit tests
-sh scripts/integration.sh        # integration tests in a disposable docker:dind Swarm
+sh scripts/integration.sh        # integration tests in a disposable docker:dind engine
 docker build --build-arg VERSION=dev -t idunn:dev .
 ```
 
-The integration script starts a privileged `docker:dind` container with its own engine, a one-node Swarm and a local registry, and removes it at the end. It covers an update under the same tag, a failing healthcheck leading to a rollback, pinned images, monitor-only, dry-run and cleanup.
+The integration script starts a privileged `docker:dind` container with its own engine, a one-node Swarm and a local registry, and removes it at the end. It covers, for services, an update under the same tag, a failing healthcheck leading to a rollback, pinned images, monitor-only, dry-run and cleanup; for standalone containers, an update with an anonymous volume, a rollback and no retry, a tag pulled by someone else, a dependent sharing a network, and pinned images.
 
 ## License
 

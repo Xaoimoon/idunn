@@ -30,11 +30,20 @@ type TagLister interface {
 	Tags(ctx context.Context, image string) ([]string, error)
 }
 
+// versionItem is a service, or a container in engine mode, as the version
+// check sees it.
+type versionItem struct {
+	name   string
+	image  string
+	labels map[string]string
+}
+
 // VersionCheck looks, for every service whose image tag is a version number,
 // for a newer version tag in the registry, and sends what it finds as one
 // report. It never updates anything. Unlike passes, it covers all services,
 // whatever their opt-in labels, Iðunn included: pinned versions are exactly
-// the ones nobody else watches. Only the Raft leader runs it.
+// the ones nobody else watches. Only the Raft leader runs it. In engine mode,
+// it covers the running containers instead.
 func (u *Updater) VersionCheck(ctx context.Context) {
 	if !u.versionMu.TryLock() {
 		u.Log.Warn("previous version check still running, skipping this one")
@@ -42,24 +51,37 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 	}
 	defer u.versionMu.Unlock()
 
-	leader, err := cluster.IsLeader(ctx, u.Docker, u.NodeID)
-	if err != nil {
-		u.Log.Error("cannot check Raft leadership", "error", err)
-		return
-	}
-	u.setLeader(leader)
-	if !leader {
-		return
-	}
+	var items []versionItem
+	if u.Engine != nil {
+		var err error
+		if items, err = u.engineVersionItems(ctx); err != nil {
+			u.Log.Error("cannot list containers", "error", err)
+			return
+		}
+	} else {
+		leader, err := cluster.IsLeader(ctx, u.Docker, u.NodeID)
+		if err != nil {
+			u.Log.Error("cannot check Raft leadership", "error", err)
+			return
+		}
+		u.setLeader(leader)
+		if !leader {
+			return
+		}
 
-	res, err := u.Docker.ServiceList(ctx, client.ServiceListOptions{})
-	if err != nil {
-		u.Log.Error("cannot list services", "error", err)
-		return
+		res, err := u.Docker.ServiceList(ctx, client.ServiceListOptions{})
+		if err != nil {
+			u.Log.Error("cannot list services", "error", err)
+			return
+		}
+		services := res.Items
+		sort.Slice(services, func(i, j int) bool { return services[i].Spec.Name < services[j].Spec.Name })
+		for _, svc := range services {
+			image, _ := referenceImage(svc)
+			items = append(items, versionItem{name: svc.Spec.Name, image: image, labels: svc.Spec.Labels})
+		}
 	}
-	services := res.Items
-	sort.Slice(services, func(i, j int) bool { return services[i].Spec.Name < services[j].Spec.Name })
-	u.Log.Info("version check started", "services", len(services))
+	u.Log.Info("version check started", "services", len(items))
 
 	type listing struct {
 		tags []string
@@ -68,13 +90,13 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 	byRepo := map[string]listing{} // one tag listing per repository
 	skipped := map[string]bool{}   // registries that timed out or answered 429
 	var events []notify.Event
-	for _, svc := range services {
+	for _, it := range items {
 		if ctx.Err() != nil {
 			return
 		}
-		log := u.Log.With("service", svc.Spec.Name)
+		log := u.Log.With("service", it.name)
 		min := u.Config.VersionLevel
-		if v, ok := svc.Spec.Labels[labelVersionLevel]; ok {
+		if v, ok := it.labels[labelVersionLevel]; ok {
 			l, valid := versions.ParseLevel(v)
 			if !valid {
 				log.Warn("invalid label value, using the global level", "label", labelVersionLevel, "value", v)
@@ -85,8 +107,7 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 		if min == versions.None {
 			continue
 		}
-		image, _ := referenceImage(svc)
-		image, _, _ = strings.Cut(image, "@") // the stack file may pin tag@digest
+		image, _, _ := strings.Cut(it.image, "@") // the stack file may pin tag@digest
 		ref, err := name.NewTag(image)
 		if err != nil || !versions.IsVersion(ref.TagStr()) {
 			log.Debug("tag is not a version, skipped", "image", image)
@@ -127,7 +148,7 @@ func (u *Updater) VersionCheck(ctx context.Context) {
 		}
 		log.Info("newer version available", "image", image, "tag", latest, "bump", bump.String())
 		events = append(events, notify.Event{Kind: notify.KindNewVersion, Level: notify.Info, Time: u.now(),
-			Service: svc.Spec.Name, Image: image, Tag: latest, Bump: bump.String()})
+			Service: it.name, Image: image, Tag: latest, Bump: bump.String()})
 	}
 	u.Log.Info("version check finished", "available", len(events))
 	u.versionsFound(events)

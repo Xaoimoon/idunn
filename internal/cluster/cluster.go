@@ -101,11 +101,13 @@ func Unavailable(nodes []Node) []Node {
 	return out
 }
 
-// Self describes the Swarm service Iðunn runs in.
+// Self describes the container Iðunn runs in and, in Swarm, its service.
 type Self struct {
-	ServiceID string
-	Image     string // image reference of the running task, tag@digest
-	User      string
+	ServiceID   string
+	Image       string // image reference of the running task, tag@digest
+	User        string
+	ContainerID string
+	Name        string // container name, without the leading slash
 }
 
 // FindSelf identifies Iðunn's own service from its container. The container
@@ -129,12 +131,14 @@ func FindSelf(ctx context.Context, d Docker) (Self, error) {
 	}
 	c := res.Container
 	if c.Config == nil {
-		return Self{}, nil
+		return Self{ContainerID: c.ID, Name: strings.TrimPrefix(c.Name, "/")}, nil
 	}
 	return Self{
-		ServiceID: c.Config.Labels["com.docker.swarm.service.id"],
-		Image:     c.Config.Image,
-		User:      c.Config.User,
+		ServiceID:   c.Config.Labels["com.docker.swarm.service.id"],
+		Image:       c.Config.Image,
+		User:        c.Config.User,
+		ContainerID: c.ID,
+		Name:        strings.TrimPrefix(c.Name, "/"),
 	}, nil
 }
 

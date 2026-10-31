@@ -1,5 +1,6 @@
 // Package updater runs Iðunn's passes: select services, detect new digests,
 // update through the Swarm API, follow the update and roll back on failure.
+// In engine mode, it updates the standalone containers of one engine instead.
 package updater
 
 import (
@@ -17,6 +18,7 @@ import (
 
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/config"
+	"github.com/xaoimoon/idunn/internal/engine"
 	"github.com/xaoimoon/idunn/internal/metrics"
 	"github.com/xaoimoon/idunn/internal/notify"
 	"github.com/xaoimoon/idunn/internal/redact"
@@ -57,6 +59,13 @@ type Updater struct {
 	Self     cluster.Self
 	Metrics  *metrics.Registry // nil when metrics are disabled
 
+	// Engine, when set, selects engine mode: standalone containers instead
+	// of Swarm services. Docker and NodeID are then unused.
+	Engine engine.Docker
+	// Settle is how long, in engine mode, a container without healthcheck
+	// must keep running after an update. 60 s when zero.
+	Settle time.Duration
+
 	// Now and PollInterval are overridable in tests.
 	Now          func() time.Time
 	PollInterval time.Duration
@@ -71,6 +80,7 @@ type Updater struct {
 	notifiedRetry    map[string]string // service ID -> rolled-back digest already notified
 	notifiedHead     map[string]bool   // image -> HEAD failure already notified
 	guardNotified    bool
+	rolledBackImage  map[string]string // engine mode: container name -> digest rolled back
 }
 
 type seen struct {
@@ -101,6 +111,7 @@ func (u *Updater) init() {
 		u.notifiedDetected = map[string]string{}
 		u.notifiedRetry = map[string]string{}
 		u.notifiedHead = map[string]bool{}
+		u.rolledBackImage = map[string]string{}
 	}
 }
 
@@ -161,6 +172,10 @@ func (u *Updater) Pass(ctx context.Context) {
 	}
 	defer u.passMu.Unlock()
 	u.init()
+	if u.Engine != nil {
+		u.enginePass(ctx)
+		return
+	}
 
 	leader, err := cluster.IsLeader(ctx, u.Docker, u.NodeID)
 	if err != nil {

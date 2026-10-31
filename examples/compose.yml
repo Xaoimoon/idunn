@@ -1,0 +1,31 @@
+# Iðunn in engine mode, for the standalone containers of one Docker engine.
+# Opt containers in with the label idunn.enable=true.
+services:
+  idunn:
+    image: idunn:latest # adapt to where the image is published
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # IDUNN_MODE: engine # detected automatically outside a Swarm
+      TZ: UTC
+      IDUNN_SCHEDULE: "0 0 * * * *"
+      IDUNN_MIN_AGE: 1h
+      IDUNN_SELF_UPDATE: "true"
+      IDUNN_NOTIFICATION_URL_FILE: /run/secrets/idunn_notification_url
+    secrets:
+      - idunn_notification_url
+    labels:
+      idunn.enable: "true"
+
+  # An updated container.
+  web:
+    image: nginx:1.27
+    restart: unless-stopped
+    labels:
+      idunn.enable: "true"
+
+secrets:
+  idunn_notification_url:
+    file: ./notification_url

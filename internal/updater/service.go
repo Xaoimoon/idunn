@@ -26,6 +26,9 @@ type target struct {
 	Name    string
 	Image   string // reference image: the tag as written in the stack file
 	Current string // digest currently pinned in the spec, may be empty
+	// Currents lists, in engine mode, every registry digest of the image the
+	// container runs: it is up to date when the registry serves one of them.
+	Currents []string
 
 	MonitorOnly bool
 	MinAge      time.Duration
@@ -62,6 +65,19 @@ func newTarget(svc swarm.Service, cfg *config.Config) target {
 		return t
 	}
 
+	t.applyLabels(labels)
+
+	if us := svc.UpdateStatus; us != nil {
+		switch us.State {
+		case swarm.UpdateStateUpdating, swarm.UpdateStateRollbackStarted:
+			t.Skip = "update already in progress (" + string(us.State) + ")"
+		}
+	}
+	return t
+}
+
+// applyLabels overrides the global settings with the idunn.* labels.
+func (t *target) applyLabels(labels map[string]string) {
 	if v, ok := labels[labelMonitorOnly]; ok {
 		if b, err := strconv.ParseBool(v); err == nil {
 			t.MonitorOnly = b
@@ -82,14 +98,6 @@ func newTarget(svc swarm.Service, cfg *config.Config) target {
 			t.Rollback = b
 		}
 	}
-
-	if us := svc.UpdateStatus; us != nil {
-		switch us.State {
-		case swarm.UpdateStateUpdating, swarm.UpdateStateRollbackStarted:
-			t.Skip = "update already in progress (" + string(us.State) + ")"
-		}
-	}
-	return t
 }
 
 // referenceImage returns the image as written in the stack file (the

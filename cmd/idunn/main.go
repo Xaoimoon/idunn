@@ -1,5 +1,5 @@
-// Command idunn keeps Docker Swarm services on the latest digest of their
-// image tag.
+// Command idunn keeps Docker Swarm services, or the standalone containers
+// of one engine, on the latest digest of their image tag.
 package main
 
 import (
@@ -16,12 +16,14 @@ import (
 	"time"
 	_ "time/tzdata" // the image has no zoneinfo; TZ must still work
 
+	"github.com/moby/moby/api/types/swarm"
 	"github.com/moby/moby/client"
 	"github.com/robfig/cron/v3"
 
 	"github.com/xaoimoon/idunn/internal/cleanup"
 	"github.com/xaoimoon/idunn/internal/cluster"
 	"github.com/xaoimoon/idunn/internal/config"
+	"github.com/xaoimoon/idunn/internal/engine"
 	"github.com/xaoimoon/idunn/internal/metrics"
 	"github.com/xaoimoon/idunn/internal/notify"
 	"github.com/xaoimoon/idunn/internal/privdrop"
@@ -41,7 +43,11 @@ func main() {
 	var err error
 	switch cmd {
 	case "", "run", "health", "cleanup":
-		// Before anything else, including reading secrets.
+		// Before anything else, including reading secrets. In engine mode
+		// Iðunn keeps running as root, like Watchtower.
+		if cmd != "cleanup" && engineMode() {
+			break
+		}
 		if who, dropErr := privdrop.Drop(socketPath(), unprivilegedUID); dropErr != nil {
 			fmt.Fprintln(os.Stderr, "idunn: cannot drop root privileges:", dropErr)
 			os.Exit(1)
@@ -99,6 +105,50 @@ func dockerClient() (*client.Client, error) {
 	return client.New(client.FromEnv, client.WithUserAgent("idunn/"+version))
 }
 
+// infoer is the part of the Docker API that describes the engine.
+type infoer interface {
+	Info(ctx context.Context, options client.InfoOptions) (client.SystemInfoResult, error)
+}
+
+// resolveMode turns IDUNN_MODE into swarm or engine: auto picks engine only
+// when the engine is not part of a Swarm at all. Any other Swarm state
+// (pending, locked, error) stays in Swarm mode, which then reports it.
+func resolveMode(ctx context.Context, docker infoer, mode string) (string, error) {
+	switch mode {
+	case config.ModeSwarm, config.ModeEngine:
+		return mode, nil
+	}
+	res, err := docker.Info(ctx, client.InfoOptions{})
+	if err != nil {
+		return "", err
+	}
+	switch res.Info.Swarm.LocalNodeState {
+	case swarm.LocalNodeStateInactive, "":
+		return config.ModeEngine, nil
+	}
+	return config.ModeSwarm, nil
+}
+
+// engineMode tells, before privileges are dropped, whether Iðunn runs in
+// engine mode. When the engine cannot be reached, it answers no: the
+// privileges are dropped and the error shows up later.
+func engineMode() bool {
+	mode := strings.ToLower(os.Getenv("IDUNN_MODE"))
+	switch mode {
+	case config.ModeSwarm, config.ModeEngine:
+		return mode == config.ModeEngine
+	}
+	docker, err := dockerClient()
+	if err != nil {
+		return false
+	}
+	defer docker.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m, err := resolveMode(ctx, docker, mode)
+	return err == nil && m == config.ModeEngine
+}
+
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
@@ -115,13 +165,29 @@ func run() error {
 	}
 	defer docker.Close()
 
-	nodeID, err := cluster.LocalNodeID(ctx, docker)
+	mode, err := resolveMode(ctx, docker, cfg.Mode)
 	if err != nil {
 		return err
 	}
-	self, err := cluster.FindSelf(ctx, docker)
-	if err != nil {
-		log.Warn("cannot identify own service; self-exclusion relies on labels and image cleanup is disabled", "error", err)
+	var nodeID string
+	var self cluster.Self
+	if mode == config.ModeSwarm {
+		if nodeID, err = cluster.LocalNodeID(ctx, docker); err != nil {
+			return err
+		}
+		self, err = cluster.FindSelf(ctx, docker)
+		if err != nil {
+			log.Warn("cannot identify own service; self-exclusion relies on labels and image cleanup is disabled", "error", err)
+		}
+	} else {
+		self, err = cluster.FindSelf(ctx, docker)
+		if err != nil {
+			log.Warn("cannot identify own container; self-update is disabled", "error", err)
+		} else if stop, err := handOverOnStart(ctx, docker, &self, log); err != nil {
+			return err
+		} else if stop {
+			return nil
+		}
 	}
 
 	creds, err := registry.LoadCredentials(cfg.RegistryAuthFile)
@@ -154,6 +220,9 @@ func run() error {
 		NodeID:   nodeID,
 		Self:     self,
 	}
+	if mode == config.ModeEngine {
+		u.Engine = docker
+	}
 	if cfg.MetricsAddr != "" {
 		reg, stopMetrics, err := serveMetrics(cfg.MetricsAddr, log)
 		if err != nil {
@@ -162,8 +231,18 @@ func run() error {
 		defer stopMetrics()
 		u.Metrics = reg
 	}
-	job := &cleanup.Job{Docker: docker, Self: self, Auth: creds, Keep: cfg.CleanupKeep, Ignore: cfg.LabelIgnore, Log: log}
-	u.Cleaner = job.Run
+	if mode == config.ModeSwarm {
+		job := &cleanup.Job{Docker: docker, Self: self, Auth: creds, Keep: cfg.CleanupKeep, Ignore: cfg.LabelIgnore, Log: log}
+		u.Cleaner = job.Run
+	} else {
+		u.Cleaner = func(ctx context.Context, repos []string) []notify.Event {
+			if err := cleanup.Local(ctx, docker, repos, cfg.CleanupKeep, log); err != nil {
+				return []notify.Event{{Kind: notify.KindCleanupFailed, Level: notify.Warn, Time: time.Now(),
+					Nodes: []string{hostName(ctx, docker)}, Message: err.Error()}}
+			}
+			return nil
+		}
+	}
 
 	scheduleDesc := cfg.Schedule
 	if cfg.Interval > 0 {
@@ -214,13 +293,60 @@ func run() error {
 	return nil
 }
 
+// handOverOnStart completes, in engine mode, a self-update on the side of
+// the Iðunn that starts: a new instance waits for the one it replaces to
+// stop; an old instance restarted after an interrupted hand-over stops if the
+// new one runs. It reports whether this instance must stop.
+func handOverOnStart(ctx context.Context, docker *client.Client, self *cluster.Self, log *slog.Logger) (bool, error) {
+	if self.ContainerID == "" {
+		return false, nil
+	}
+	me, err := engine.Inspect(ctx, docker, self.ContainerID)
+	if err != nil {
+		return false, err
+	}
+	superseded, err := engine.Superseded(ctx, docker, me, log)
+	if err != nil {
+		log.Warn("cannot check an interrupted self-update", "error", err)
+	} else if superseded {
+		log.Info("a newer instance replaces this one, stopping")
+		// Stopping our own container through the API keeps its restart
+		// policy from starting it again; SIGTERM then ends the process.
+		go docker.ContainerStop(context.WithoutCancel(ctx), me.ID, client.ContainerStopOptions{})
+		<-ctx.Done()
+		return true, nil
+	}
+	self.Name = me.Name
+	if err := engine.AwaitPredecessor(ctx, docker, me, 0, log); err != nil {
+		if ctx.Err() != nil {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+// hostName returns the engine's host name, as shown in notifications.
+func hostName(ctx context.Context, docker infoer) string {
+	if res, err := docker.Info(ctx, client.InfoOptions{}); err == nil && res.Info.Name != "" {
+		return res.Info.Name
+	}
+	h, _ := os.Hostname()
+	return h
+}
+
 // startup logs the configuration and the tracked services on every
-// instance; only the leader sends the startup notification.
+// instance; only the leader sends the startup notification, or the single
+// instance in engine mode.
 func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, scheduleDesc string) {
 	cfg := u.Config
 	host, _ := os.Hostname()
 	nodeName := nodeID
-	if nodes, err := cluster.Nodes(ctx, u.Docker); err == nil {
+	backend := config.ModeSwarm
+	if u.Engine != nil {
+		backend = config.ModeEngine
+		nodeName = hostName(ctx, u.Docker)
+	} else if nodes, err := cluster.Nodes(ctx, u.Docker); err == nil {
 		for _, n := range nodes {
 			if n.ID == nodeID {
 				nodeName = n.Name
@@ -239,31 +365,32 @@ func startup(ctx context.Context, u *updater.Updater, log *slog.Logger, nodeID, 
 		blackout[i] = w.String()
 	}
 
-	services, err := u.Tracked(ctx)
+	names, err := u.TrackedNames(ctx)
 	if err != nil {
 		log.Error("cannot list services", "error", err)
-	}
-	names := make([]string, len(services))
-	for i, s := range services {
-		names[i] = s.Spec.Name
 	}
 	versionCheck := "off"
 	if cfg.VersionCheck {
 		versionCheck = cfg.VersionSchedule + " (" + cfg.VersionLevel.String() + ")"
 	}
 	log.Info("idunn started",
-		"version", version, "node", nodeName, "container", host,
+		"version", version, "backend", backend, "node", nodeName, "container", host,
 		"schedule", scheduleDesc, "version_check", versionCheck, "timezone", time.Local.String(),
 		"blackout", strings.Join(blackout, ","), "filter", cfg.LabelFilter.String(),
 		"ignore", cfg.LabelIgnore.String(), "min_age", cfg.MinAge.String(),
-		"mode", strings.Join(mode, ","), "self_update", cfg.SelfUpdate, "metrics", cfg.MetricsAddr, "tracked", len(services))
+		"mode", strings.Join(mode, ","), "self_update", cfg.SelfUpdate, "metrics", cfg.MetricsAddr, "tracked", len(names))
 	log.Info("tracked services", "services", strings.Join(names, " "))
 
-	if leader, err := cluster.IsLeader(ctx, u.Docker, nodeID); err == nil && leader {
+	leader := u.Engine != nil
+	if !leader {
+		ok, err := cluster.IsLeader(ctx, u.Docker, nodeID)
+		leader = err == nil && ok
+	}
+	if leader {
 		u.Notifier.Send(ctx, []notify.Event{{
 			Kind: notify.KindStartup, Level: notify.Info, Time: time.Now(),
 			Version: version, Node: nodeName, Schedule: scheduleDesc,
-			Blackout: strings.Join(blackout, ","), Tracked: len(services), Mode: strings.Join(mode, ", "),
+			Blackout: strings.Join(blackout, ","), Tracked: len(names), Mode: strings.Join(mode, ", "),
 		}})
 	}
 	if _, in := schedule.InBlackout(cfg.Blackout, time.Now()); in {

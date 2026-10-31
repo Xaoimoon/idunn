@@ -36,8 +36,18 @@ type Label struct {
 
 func (l Label) String() string { return l.Key + "=" + l.Value }
 
+// Modes select what Iðunn updates: Swarm services, or standalone containers
+// of the engine it talks to. ModeAuto picks one from the engine's state.
+const (
+	ModeAuto   = "auto"
+	ModeSwarm  = "swarm"
+	ModeEngine = "engine"
+)
+
 // Config holds every runtime setting.
 type Config struct {
+	Mode string
+
 	Schedule string
 	Interval time.Duration
 	Blackout []schedule.Window
@@ -45,6 +55,8 @@ type Config struct {
 	ClusterGuard bool
 	LabelFilter  Label
 	LabelIgnore  Label
+
+	ComposeDependsOn bool
 
 	MinAge      time.Duration
 	MonitorOnly bool
@@ -89,6 +101,8 @@ type readFunc func(string) ([]byte, error)
 func load(lookup lookupFunc, read readFunc) (*Config, error) {
 	e := &env{lookup: lookup, read: read}
 	c := &Config{
+		Mode:               strings.ToLower(e.string("IDUNN_MODE", ModeAuto)),
+		ComposeDependsOn:   e.bool("IDUNN_COMPOSE_DEPENDS_ON", false),
 		ClusterGuard:       e.bool("IDUNN_CLUSTER_GUARD", true),
 		MinAge:             e.duration("IDUNN_MIN_AGE", 0),
 		MonitorOnly:        e.bool("IDUNN_MONITOR_ONLY", false),
@@ -162,6 +176,7 @@ func load(lookup lookupFunc, read readFunc) (*Config, error) {
 	if c.CleanupKeep < 0 {
 		e.fail("IDUNN_CLEANUP_KEEP must not be negative")
 	}
+	e.oneOf("IDUNN_MODE", c.Mode, ModeAuto, ModeSwarm, ModeEngine)
 	e.oneOf("IDUNN_HEAD_FAILURE_WARN", string(c.HeadFailureWarn), "never", "auto", "always")
 	e.oneOf("IDUNN_NOTIFICATION_LANG", c.NotificationLang, "en", "fr")
 	e.oneOf("IDUNN_NOTIFICATION_LEVEL", c.NotificationLevel, "info", "warn", "error")
