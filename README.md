@@ -2,6 +2,8 @@
 
 # Iðunn
 
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/xaoimoon)
+
 Iðunn keeps Docker Swarm services, or the standalone containers of a Docker engine, on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
 
 It brings together what [Watchtower](https://github.com/nicholas-fedor/watchtower) does well for standalone containers (built-in notifications, rich settings, cheap detection) and what makes [Shepherd](https://github.com/containrrr/shepherd) safe on Swarm (native service updates, rollback). On a standalone engine, it recreates containers the way Watchtower does, with a health check and a rollback on top: see [engine mode](#standalone-containers-engine-mode).
