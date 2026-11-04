@@ -2,7 +2,7 @@
 
 # Iðunn
 
-[![Ko-fi](https://img.shields.io/badge/Ko--fi-support-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/xaoimoon)
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F6Z42A2W0S)
 
 Iðunn keeps Docker Swarm services, or the standalone containers of a Docker engine, on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
 
