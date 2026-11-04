@@ -2,6 +2,15 @@
 
 # Iðunn
 
+[![Release](https://img.shields.io/github/v/release/Xaoimoon/idunn?style=for-the-badge)](https://github.com/Xaoimoon/idunn/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg?style=for-the-badge)](https://github.com/Xaoimoon/idunn/blob/main/LICENSE)
+
+[![Maintained](https://img.shields.io/badge/maintained-yes-green.svg?style=for-the-badge)](https://github.com/Xaoimoon/idunn/commits/main)
+[![Activity](https://img.shields.io/github/commit-activity/y/Xaoimoon/idunn?style=for-the-badge)](https://github.com/Xaoimoon/idunn/commits/main)
+[![Discussions](https://img.shields.io/github/discussions/Xaoimoon/idunn?style=for-the-badge&logo=github&color=7289DA)](https://github.com/Xaoimoon/idunn/discussions)
+[![Issues](https://img.shields.io/github/issues/Xaoimoon/idunn?style=for-the-badge&logo=github&color=E05D44)](https://github.com/Xaoimoon/idunn/issues)
+[![Stars](https://img.shields.io/github/stars/Xaoimoon/idunn?style=for-the-badge&logo=github&color=DFB317)](https://github.com/Xaoimoon/idunn/stargazers)
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F6Z42A2W0S)
 
 Iðunn keeps Docker Swarm services, or the standalone containers of a Docker engine, on the latest image published under their tag. It checks registries with manifest `HEAD` requests (no pull, no rate-limit cost when nothing changed), updates services through the Swarm API so that each service's `update_config` applies, follows the update to its end, rolls back on failure and reports the outcome through [Shoutrrr](https://github.com/nicholas-fedor/shoutrrr) (Discord, Slack, Telegram, e-mail, ntfy, Gotify, generic webhooks…).
