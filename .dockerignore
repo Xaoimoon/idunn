@@ -1,5 +1,6 @@
 .git
 .forgejo
+.github
 *.md
 examples
 assets
