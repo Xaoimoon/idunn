@@ -61,11 +61,11 @@ func TestVersionCheckMetrics(t *testing.T) {
 	h.u.Metrics = metrics.New()
 	h.cfg.VersionLevel = versions.Patch
 	h.u.Lister = &fakeLister{calls: map[string]int{}, tags: map[string][]string{"mariadb": {"12.3.3", "13.0.2"}}}
-	h.docker.add("db", "galera_node1", "mariadb:12.3.3", nil)
+	h.docker.add("db", "db_node1", "mariadb:12.3.3", nil)
 
 	h.u.VersionCheck(context.Background())
 
-	want := `idunn_new_version_available{bump="major",image="mariadb:12.3.3",latest="13.0.2",service="galera_node1"} 1`
+	want := `idunn_new_version_available{bump="major",image="mariadb:12.3.3",latest="13.0.2",service="db_node1"} 1`
 	if out := render(t, h.u.Metrics); !strings.Contains(out, want) {
 		t.Errorf("missing %q in:\n%s", want, out)
 	}
@@ -73,7 +73,7 @@ func TestVersionCheckMetrics(t *testing.T) {
 	// Once upgraded, the series disappears at the next check.
 	h.docker.services["db"].Spec.TaskTemplate.ContainerSpec.Image = "mariadb:13.0.2"
 	h.u.VersionCheck(context.Background())
-	if out := render(t, h.u.Metrics); strings.Contains(out, "galera_node1") {
+	if out := render(t, h.u.Metrics); strings.Contains(out, "db_node1") {
 		t.Errorf("stale series left:\n%s", out)
 	}
 }

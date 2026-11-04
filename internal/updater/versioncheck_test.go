@@ -42,9 +42,9 @@ func TestVersionCheck(t *testing.T) {
 	h.u.Lister = lister
 
 	// Not opted in to updates, still checked.
-	h.docker.add("s1", "galera_node1", "mariadb:12.3.3@"+d1, map[string]string{"idunn.enable": "false"})
-	h.docker.add("s2", "galera_node2", "mariadb:12.3.3@"+d1, map[string]string{"idunn.version-level": "minor"})
-	h.docker.add("s3", "galera_haproxy", "haproxy:2.9-alpine@"+d1, nil)
+	h.docker.add("s1", "db_node1", "mariadb:12.3.3@"+d1, map[string]string{"idunn.enable": "false"})
+	h.docker.add("s2", "db_node2", "mariadb:12.3.3@"+d1, map[string]string{"idunn.version-level": "minor"})
+	h.docker.add("s3", "db_haproxy", "haproxy:2.9-alpine@"+d1, nil)
 	// Stack file pinning tag@digest: the tag is still compared.
 	h.docker.add("s4", "self", "example.com/app:v1.0.0@"+d1, map[string]string{
 		"com.docker.stack.image": "example.com/app:v1.0.0@" + d1})
@@ -62,10 +62,10 @@ func TestVersionCheck(t *testing.T) {
 		got[e.Service] = e.Tag + " " + e.Bump
 	}
 	want := map[string]string{
-		"galera_node1":   "13.0.0 major",
-		"galera_node2":   "13.0.0 major",
-		"galera_haproxy": "3.2-alpine major",
-		"self":           "v1.1.0 minor",
+		"db_node1":   "13.0.0 major",
+		"db_node2":   "13.0.0 major",
+		"db_haproxy": "3.2-alpine major",
+		"self":       "v1.1.0 minor",
 	}
 	if len(got) != len(want) {
 		t.Errorf("events = %v, want %v", got, want)
