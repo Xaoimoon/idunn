@@ -53,8 +53,10 @@ Iðunn only changes the digest of running services. When you redeploy a stack, S
 
 ## Quick start
 
+Images for linux/amd64 and linux/arm64 are published at `ghcr.io/xaoimoon/idunn`: `latest` and `vX.Y.Z` for releases, `main` for the main branch.
+
 1. Optionally store notification URLs as a secret: `printf 'discord://token@webhookid' | docker secret create idunn_notification_url -`
-2. Adapt [examples/stack.yml](examples/stack.yml) (image path) and deploy it: `docker stack deploy -c stack.yml idunn`.
+2. Adapt [examples/stack.yml](examples/stack.yml) and deploy it: `docker stack deploy -c stack.yml idunn`.
 3. Add `idunn.enable: "true"` to the `deploy.labels` of the services to keep up to date.
 
 Start with `IDUNN_MONITOR_ONLY=true` for a few days to see what would be updated.
@@ -156,7 +158,7 @@ By default Iðunn never touches its own service: you upgrade it by redeploying i
 - It is checked whatever its opt-in or ignore label, and always last in the pass, after the cleanup.
 - The report, including a "self-update started" line, is sent **before** the update, because Swarm stops the running instance to replace it. Iðunn does not follow the update: the new version announces itself with its startup notification.
 - A failed start is handled by Swarm, so give Iðunn's service `update_config.failure_action: rollback` and keep its healthcheck. The digest that was rolled back is then not retried.
-- The stack file must reference a tag (`idunn:latest`, or a channel tag), not `tag@digest`: an image pinned by digest is never updated.
+- The stack file must reference a tag (`ghcr.io/xaoimoon/idunn:latest`, or a channel tag), not `tag@digest`: an image pinned by digest is never updated.
 - Images left behind by previous Iðunn versions are not removed by its own cleanup job.
 
 ## Standalone containers (engine mode)
@@ -167,7 +169,7 @@ On an engine that is not part of a Swarm (or with `IDUNN_MODE=engine`), Iðunn u
 docker run -d --name idunn --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e IDUNN_NOTIFICATION_URL='discord://token@webhookid' \
-  idunn:latest
+  ghcr.io/xaoimoon/idunn:latest
 ```
 
 See also [examples/compose.yml](examples/compose.yml). Opt the containers in with the `idunn.enable=true` label (`labels:` in a Compose file).

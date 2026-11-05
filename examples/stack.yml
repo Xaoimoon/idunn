@@ -4,7 +4,7 @@
 # group: no user or group to set here.
 services:
   idunn:
-    image: idunn:latest # use your registry path, ideally pinned as tag@digest
+    image: ghcr.io/xaoimoon/idunn:latest # or a release tag such as v0.4.1
     read_only: true
     environment:
       TZ: UTC

@@ -2,7 +2,7 @@
 # Opt containers in with the label idunn.enable=true.
 services:
   idunn:
-    image: idunn:latest # adapt to where the image is published
+    image: ghcr.io/xaoimoon/idunn:latest
     restart: unless-stopped
     read_only: true
     volumes:
